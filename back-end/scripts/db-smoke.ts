@@ -1,15 +1,15 @@
-// AI Generated code <PURPOSE>: smoke test durable quiz repositories against PostgreSQL
+// AI Generated code <PURPOSE>: run durable quiz database smoke verification
 import { randomUUID } from 'node:crypto'
 
 import { eq } from 'drizzle-orm'
 
-import { closeDb, db } from './client.js'
-import { questionSets, quizSessions } from './schema.js'
-import { answerSubmissionsRepository } from './repositories/answer-submissions.js'
-import { finalResultsRepository } from './repositories/final-results.js'
-import { participantsRepository } from './repositories/participants.js'
-import { questionSetsRepository } from './repositories/question-sets.js'
-import { quizSessionsRepository } from './repositories/quiz-sessions.js'
+import { closeDb, db } from '@/db/client.js'
+import { answerSubmissionsRepository } from '@/db/repositories/answer-submissions.js'
+import { finalResultsRepository } from '@/db/repositories/final-results.js'
+import { participantsRepository } from '@/db/repositories/participants.js'
+import { questionSetsRepository } from '@/db/repositories/question-sets.js'
+import { quizSessionsRepository } from '@/db/repositories/quiz-sessions.js'
+import { questionSets, quizSessions } from '@/db/schema.js'
 
 const runSmoke = async (): Promise<void> => {
   const suffix = randomUUID().replaceAll('-', '').slice(0, 10).toUpperCase()

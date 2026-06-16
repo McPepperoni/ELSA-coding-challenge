@@ -9,7 +9,7 @@
     "build": "bun run typecheck",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:smoke": "bun run src/db/smoke.ts"
+    "db:smoke": "bun run scripts/db-smoke.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
