@@ -7,6 +7,7 @@
 - Tests must live under each project's `test/` folder, not beside implementation files in `src/`.
 - Test folders must mirror source ownership after `src/`; for example, `back-end/src/db/repositories/*` tests belong in `back-end/test/db/repositories/`.
 - Each project must configure the `@/*` import alias to resolve to that project's `src/*`.
+- Before creating a new work branch, switch to `main`, pull the latest `origin/main`, and create the branch from that updated `main`.
 - When asked about a library, framework, SDK, API, CLI, or cloud service, use Context7 before answering:
   - Run `npx ctx7@latest library <name> "<user question>"`.
   - Pick the best `/org/project` match.
