@@ -20,6 +20,7 @@ import type {
   ServerEvent,
 } from '@/types/events.js'
 import type { PersistenceEventSink } from '@/workers/persistence-events.js'
+import type { PersistenceEvent } from '@/workers/persistence-events.js'
 import { noopPersistenceEventSink } from '@/workers/persistence-events.js'
 
 import type { SocketHub } from './broadcasts.js'
@@ -132,6 +133,8 @@ const answerRejectionReasons = new Set<ValidationErrorReason>([
   'inactive_question',
 ])
 
+const sessionMutationLocks = new Map<string, Promise<void>>()
+
 export const createLiveQuizRuntime = (
   dependencies: LiveQuizRuntimeDependencies,
 ): LiveQuizRuntime => {
@@ -159,17 +162,19 @@ export const createLiveQuizRuntime = (
     },
 
     async handleHostEvent({ connection, event, socket }) {
-      if (event.type === 'start_quiz') {
-        await startQuiz(connection.quizSession, socket)
-        return
-      }
+      await withSessionMutationLock(connection.quizSession.id, async () => {
+        if (event.type === 'start_quiz') {
+          await startQuiz(connection.quizSession, socket)
+          return
+        }
 
-      if (event.type === 'next_question') {
-        await advanceOrFinishQuiz(connection.quizSession, socket)
-        return
-      }
+        if (event.type === 'next_question') {
+          await advanceOrFinishQuiz(connection.quizSession, socket)
+          return
+        }
 
-      await finishQuiz(connection.quizSession, socket)
+        await finishQuiz(connection.quizSession, socket)
+      })
     },
 
     async handleParticipantEvent({ connection, event, socket }) {
@@ -177,7 +182,7 @@ export const createLiveQuizRuntime = (
     },
 
     async expireQuestion(quizSessionId) {
-      await expireQuestion(quizSessionId)
+      await expireQuestion({ quizSessionId })
     },
   } satisfies LiveQuizRuntime
 
@@ -192,9 +197,17 @@ export const createLiveQuizRuntime = (
 
     if (liveSession?.status === 'question_active' && liveSession.endsAt) {
       if (liveSession.endsAt.getTime() <= clock.now().getTime()) {
-        await expireQuestion(quizSessionId)
+        await expireQuestion({
+          quizSessionId,
+          expectedQuestionId: liveSession.currentQuestionId ?? undefined,
+          expectedEndsAt: liveSession.endsAt,
+        })
       } else {
-        scheduleQuestionEnd(quizSessionId, liveSession.endsAt)
+        scheduleQuestionEnd({
+          quizSessionId,
+          questionId: liveSession.currentQuestionId,
+          endsAt: liveSession.endsAt,
+        })
       }
       return
     }
@@ -241,13 +254,6 @@ export const createLiveQuizRuntime = (
       }),
     })
 
-    await dependencies.liveSessions.setActiveQuestion({
-      quizSessionId: quizSession.id,
-      questionId: question.id,
-      questionPosition: 1,
-      startedAt: timerWindow.startedAt,
-      endsAt: timerWindow.endsAt,
-    })
     await dependencies.answerLocks.resetQuestionAnswers({
       quizSessionId: quizSession.id,
       questionId: question.id,
@@ -261,7 +267,24 @@ export const createLiveQuizRuntime = (
       return
     }
 
-    scheduleQuestionEnd(quizSession.id, timerWindow.endsAt)
+    try {
+      await dependencies.liveSessions.setActiveQuestion({
+        quizSessionId: quizSession.id,
+        questionId: question.id,
+        questionPosition: 1,
+        startedAt: timerWindow.startedAt,
+        endsAt: timerWindow.endsAt,
+      })
+    } catch (error) {
+      await rollbackQuizSessionState(quizSession)
+      throw error
+    }
+
+    scheduleQuestionEnd({
+      quizSessionId: quizSession.id,
+      questionId: question.id,
+      endsAt: timerWindow.endsAt,
+    })
     await broadcastSessionState(updatedSession)
   }
 
@@ -298,16 +321,17 @@ export const createLiveQuizRuntime = (
       return
     }
 
-    await startQuestion(quizSession, questionSet, nextPosition, socket)
+    await startQuestion(quizSession, questionSet, currentState.questionOrderIds, nextPosition, socket)
   }
 
   const startQuestion = async (
     quizSession: QuizSession,
     questionSet: FullQuestionSet,
+    questionOrderIds: readonly string[],
     questionPosition: number,
     socket: ConnectionSocket,
   ): Promise<void> => {
-    const question = findQuestionByPosition(questionSet, quizSession.questionOrderIds, questionPosition)
+    const question = findQuestionByPosition(questionSet, questionOrderIds, questionPosition)
     if (!question) {
       sendRuntimeError(socket, {
         code: 'current_question_not_found',
@@ -324,13 +348,6 @@ export const createLiveQuizRuntime = (
       }),
     })
 
-    await dependencies.liveSessions.setActiveQuestion({
-      quizSessionId: quizSession.id,
-      questionId: question.id,
-      questionPosition,
-      startedAt: timerWindow.startedAt,
-      endsAt: timerWindow.endsAt,
-    })
     await dependencies.answerLocks.resetQuestionAnswers({
       quizSessionId: quizSession.id,
       questionId: question.id,
@@ -343,7 +360,24 @@ export const createLiveQuizRuntime = (
       return
     }
 
-    scheduleQuestionEnd(quizSession.id, timerWindow.endsAt)
+    try {
+      await dependencies.liveSessions.setActiveQuestion({
+        quizSessionId: quizSession.id,
+        questionId: question.id,
+        questionPosition,
+        startedAt: timerWindow.startedAt,
+        endsAt: timerWindow.endsAt,
+      })
+    } catch (error) {
+      await rollbackQuizSessionState(quizSession)
+      throw error
+    }
+
+    scheduleQuestionEnd({
+      quizSessionId: quizSession.id,
+      questionId: question.id,
+      endsAt: timerWindow.endsAt,
+    })
     await broadcastSessionState(updatedSession)
   }
 
@@ -364,8 +398,6 @@ export const createLiveQuizRuntime = (
     }
 
     const finishedAt = clock.now()
-    timers.cancelQuestionTimer(quizSession.id)
-    await dependencies.liveSessions.finishLiveSession(quizSession.id)
     const updatedSession = await updateQuizSession(socket, quizSession, {
       status: 'finished',
       currentQuestionPosition: null,
@@ -375,8 +407,16 @@ export const createLiveQuizRuntime = (
       return
     }
 
+    try {
+      await dependencies.liveSessions.finishLiveSession(quizSession.id)
+    } catch (error) {
+      await rollbackQuizSessionState(quizSession)
+      throw error
+    }
+
+    timers.cancelQuestionTimer(quizSession.id)
     const leaderboard = await dependencies.leaderboard.readLeaderboard(quizSession.id)
-    await persistenceSink.enqueue({
+    enqueuePersistenceEvent({
       type: 'final_leaderboard',
       quizSessionId: quizSession.id,
       entries: leaderboard.map((entry) => ({
@@ -392,49 +432,73 @@ export const createLiveQuizRuntime = (
     await broadcastSessionState(updatedSession)
   }
 
-  const expireQuestion = async (quizSessionId: string): Promise<void> => {
-    const [quizSession, liveSession] = await Promise.all([
-      dependencies.quizSessions.findById(quizSessionId),
-      dependencies.liveSessions.readLiveSession(quizSessionId),
-    ])
+  const expireQuestion = async (
+    input: Readonly<{
+      quizSessionId: string
+      expectedQuestionId?: string
+      expectedEndsAt?: Date
+    }>,
+  ): Promise<void> => {
+    await withSessionMutationLock(input.quizSessionId, async () => {
+      const [quizSession, liveSession] = await Promise.all([
+        dependencies.quizSessions.findById(input.quizSessionId),
+        dependencies.liveSessions.readLiveSession(input.quizSessionId),
+      ])
 
-    if (!quizSession || liveSession?.status !== 'question_active') {
-      return
-    }
+      if (!quizSession || quizSession.status === 'finished' || liveSession?.status !== 'question_active') {
+        return
+      }
 
-    const questionId = liveSession.currentQuestionId
-    const questionPosition = liveSession.currentQuestionPosition
-    const startedAt = liveSession.startedAt
+      const questionId = liveSession.currentQuestionId
+      const questionPosition = liveSession.currentQuestionPosition
+      const startedAt = liveSession.startedAt
 
-    if (!questionId || !questionPosition || !startedAt) {
-      return
-    }
+      if (!questionId || !questionPosition || !startedAt) {
+        return
+      }
 
-    const questionSet = await dependencies.questionSets.findFullQuestionSetById(quizSession.questionSetId)
-    if (!questionSet) {
-      return
-    }
+      if (
+        (input.expectedQuestionId && input.expectedQuestionId !== questionId) ||
+        (input.expectedEndsAt &&
+          (!liveSession.endsAt || liveSession.endsAt.getTime() !== input.expectedEndsAt.getTime()))
+      ) {
+        return
+      }
 
-    const currentState = resolveCurrentState(quizSession, liveSession, questionSet)
-    const transition = transitionQuizState({ state: currentState, action: 'timer_expired' })
-    if (!transition.ok) {
-      return
-    }
+      const questionSet = await dependencies.questionSets.findFullQuestionSetById(quizSession.questionSetId)
+      if (!questionSet) {
+        return
+      }
 
-    await dependencies.liveSessions.setQuestionReveal({
-      quizSessionId,
-      questionId,
-      questionPosition,
-      startedAt,
-    })
-    const updatedSession = await dependencies.quizSessions.updateQuizSessionState(quizSessionId, {
-      status: 'question_reveal',
-      currentQuestionPosition: questionPosition,
-    })
+      const currentState = resolveCurrentState(quizSession, liveSession, questionSet)
+      const transition = transitionQuizState({ state: currentState, action: 'timer_expired' })
+      if (!transition.ok) {
+        return
+      }
 
-    if (updatedSession) {
+      const updatedSession = await dependencies.quizSessions.updateQuizSessionState(input.quizSessionId, {
+        status: 'question_reveal',
+        currentQuestionPosition: questionPosition,
+      })
+
+      if (!updatedSession) {
+        return
+      }
+
+      try {
+        await dependencies.liveSessions.setQuestionReveal({
+          quizSessionId: input.quizSessionId,
+          questionId,
+          questionPosition,
+          startedAt,
+        })
+      } catch (error) {
+        await rollbackQuizSessionState(quizSession)
+        throw error
+      }
+
       await broadcastSessionState(updatedSession)
-    }
+    })
   }
 
   const submitAnswer = async (
@@ -500,7 +564,7 @@ export const createLiveQuizRuntime = (
       scoreAwarded,
       submittedAt,
     })
-    await persistenceSink.enqueue({
+    enqueuePersistenceEvent({
       type: 'accepted_answer',
       quizSessionId: quizSession.id,
       participantId: participant.id,
@@ -511,7 +575,7 @@ export const createLiveQuizRuntime = (
       submittedAt,
     })
 
-    sendEvent(socket, {
+    trySendEvent(socket, {
       type: 'answer_result',
       status: 'accepted',
       selectedOptionId,
@@ -580,11 +644,39 @@ export const createLiveQuizRuntime = (
     )
   }
 
-  const scheduleQuestionEnd = (quizSessionId: string, endsAt: Date): void => {
+  const enqueuePersistenceEvent = (event: PersistenceEvent): void => {
+    void persistenceSink.enqueue(event).catch((error: unknown) => {
+      console.error('Failed to enqueue persistence event', error)
+    })
+  }
+
+  const rollbackQuizSessionState = async (quizSession: QuizSession): Promise<void> => {
+    try {
+      await dependencies.quizSessions.updateQuizSessionState(quizSession.id, {
+        status: quizSession.status,
+        currentQuestionPosition: quizSession.currentQuestionPosition,
+        startedAt: quizSession.startedAt,
+        finishedAt: quizSession.finishedAt,
+      })
+    } catch (error) {
+      console.error('Failed to roll back quiz session runtime state', error)
+    }
+  }
+
+  const scheduleQuestionEnd = (input: Readonly<{
+    quizSessionId: string
+    questionId: string | null
+    endsAt: Date
+  }>): void => {
     timers.scheduleQuestionEnd({
-      quizSessionId,
-      endsAt,
-      onExpire: runtime.expireQuestion,
+      quizSessionId: input.quizSessionId,
+      endsAt: input.endsAt,
+      onExpire: () =>
+        expireQuestion({
+          quizSessionId: input.quizSessionId,
+          expectedQuestionId: input.questionId ?? undefined,
+          expectedEndsAt: input.endsAt,
+        }),
     })
   }
 
@@ -639,7 +731,7 @@ const sendRejectedAnswer = (
     ? reason as AnswerRejectionReason
     : 'wrong_state'
 
-  sendEvent(socket, {
+  trySendEvent(socket, {
     type: 'answer_result',
     status: 'rejected',
     selectedOptionId,
@@ -655,13 +747,45 @@ const sendRuntimeError = (
     message: string
   }>,
 ): void => {
-  sendEvent(socket, {
+  trySendEvent(socket, {
     type: 'runtime_error',
     code: input.code,
     message: input.message,
   } satisfies RuntimeErrorEvent)
 }
 
-const sendEvent = (socket: ConnectionSocket, event: ServerEvent): void => {
-  socket.send(serializeServerEvent(event))
+const trySendEvent = (socket: ConnectionSocket, event: ServerEvent): boolean => {
+  try {
+    socket.send(serializeServerEvent(event))
+    return true
+  } catch (error) {
+    console.error('Failed to send runtime event', error)
+    return false
+  }
+}
+
+const withSessionMutationLock = async <Value>(
+  quizSessionId: string,
+  mutate: () => Promise<Value>,
+): Promise<Value> => {
+  const previousMutation = sessionMutationLocks.get(quizSessionId) ?? Promise.resolve()
+  let releaseCurrentMutation!: () => void
+  const currentMutation = new Promise<void>((resolve) => {
+    releaseCurrentMutation = resolve
+  })
+  const queuedMutation = previousMutation.catch(() => undefined).then(() => currentMutation)
+
+  sessionMutationLocks.set(quizSessionId, queuedMutation)
+
+  await previousMutation.catch(() => undefined)
+
+  try {
+    return await mutate()
+  } finally {
+    releaseCurrentMutation()
+
+    if (sessionMutationLocks.get(quizSessionId) === queuedMutation) {
+      sessionMutationLocks.delete(quizSessionId)
+    }
+  }
 }

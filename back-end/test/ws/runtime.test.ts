@@ -1,5 +1,5 @@
 // AI Generated code <PURPOSE>: verify live quiz runtime orchestration behavior
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 
 import type { Participant, QuizSession } from '@/db/schema.js'
 import type { FullQuestionSet } from '@/db/repositories/question-sets.js'
@@ -120,8 +120,28 @@ const createSocket = (): SentSocket => ({
   },
 })
 
+const createThrowingSocket = (): SentSocket => ({
+  sent: [],
+  send() {
+    throw new Error('socket unavailable')
+  },
+  close() {
+    return undefined
+  },
+})
+
 const parseSent = (socket: SentSocket, index = 0): ServerEvent =>
   JSON.parse(socket.sent[index] ?? '{}')
+
+const createDeferred = <Value = void>() => {
+  let resolve!: (value: Value) => void
+
+  const promise = new Promise<Value>((innerResolve) => {
+    resolve = innerResolve
+  })
+
+  return { promise, resolve }
+}
 
 const activeLiveState = (overrides: Partial<LiveSessionState> = {}): LiveSessionState => ({
   quizSessionId: quizSession.id,
@@ -134,7 +154,14 @@ const activeLiveState = (overrides: Partial<LiveSessionState> = {}): LiveSession
   ...overrides,
 })
 
-const createDependencies = () => {
+const createDependencies = (
+  options: Readonly<{
+    persistenceRejects?: boolean
+    deferActiveQuestion?: boolean
+    activeQuestionRejects?: boolean
+  }> = {},
+) => {
+  const activeQuestionDeferred = createDeferred()
   let durableSession: QuizSession = { ...quizSession }
   let liveSession: LiveSessionState | null = {
     quizSessionId: quizSession.id,
@@ -229,6 +256,12 @@ const createDependencies = () => {
     liveSessions: {
       readLiveSession: async () => liveSession,
       async setActiveQuestion(input) {
+        if (options.deferActiveQuestion) {
+          await activeQuestionDeferred.promise
+        }
+        if (options.activeQuestionRejects) {
+          throw new Error('live state unavailable')
+        }
         activeQuestions.push(input)
         liveSession = activeLiveState({
           currentQuestionId: input.questionId,
@@ -307,6 +340,9 @@ const createDependencies = () => {
     hub,
     persistenceSink: {
       async enqueue(event) {
+        if (options.persistenceRejects) {
+          throw new Error('persistence unavailable')
+        }
         persistenceEvents.push(event)
       },
     },
@@ -325,6 +361,9 @@ const createDependencies = () => {
     },
     setAcceptedLock: (value: boolean) => {
       acceptedLock = value
+    },
+    releaseActiveQuestion: () => {
+      activeQuestionDeferred.resolve()
     },
     activeQuestions,
     cancelledTimers,
@@ -601,4 +640,203 @@ test('finish command cancels timer and enqueues final leaderboard', async () => 
     quizSessionId: quizSession.id,
     recordedAt: later,
   })
+})
+
+test('stale scheduled timer no-ops when a different question is active', async () => {
+  const deps = createDependencies()
+  const socket = createSocket()
+
+  await deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'start_quiz' },
+    socket,
+  })
+
+  deps.setDurableSession({ ...quizSession, status: 'question_active', currentQuestionPosition: 2 })
+  deps.setLiveSession(activeLiveState({
+    currentQuestionId: 'question-2',
+    currentQuestionPosition: 2,
+    startedAt: later,
+    endsAt: new Date('2026-06-16T10:00:35.000Z'),
+  }))
+
+  await deps.scheduledTimers[0]?.onExpire(quizSession.id)
+
+  expect(deps.reveals).toEqual([])
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_active',
+    question: { id: 'question-1' },
+  })
+})
+
+test('accepted answer still broadcasts when persistence enqueue rejects', async () => {
+  const deps = createDependencies({ persistenceRejects: true })
+  const socket = createSocket()
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  deps.setDurableSession({ ...quizSession, status: 'question_active', currentQuestionPosition: 1 })
+  deps.setLiveSession(activeLiveState())
+
+  try {
+    await deps.runtime.handleParticipantEvent({
+      connection: { role: 'participant', participant, quizSession },
+      event: { type: 'submit_answer', selectedOptionId: 'option-1' },
+      socket,
+    })
+  } finally {
+    consoleError.mockRestore()
+  }
+
+  expect(parseSent(socket)).toMatchObject({ type: 'answer_result', status: 'accepted' })
+  expect(deps.scoredAnswers).toHaveLength(1)
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_active',
+    answeredCount: 1,
+  })
+})
+
+test('accepted answer still broadcasts when direct answer result send throws', async () => {
+  const deps = createDependencies()
+  const socket = createThrowingSocket()
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  deps.setDurableSession({ ...quizSession, status: 'question_active', currentQuestionPosition: 1 })
+  deps.setLiveSession(activeLiveState())
+
+  try {
+    await deps.runtime.handleParticipantEvent({
+      connection: { role: 'participant', participant, quizSession },
+      event: { type: 'submit_answer', selectedOptionId: 'option-1' },
+      socket,
+    })
+  } finally {
+    consoleError.mockRestore()
+  }
+
+  expect(deps.scoredAnswers).toHaveLength(1)
+  expect(deps.persistenceEvents).toHaveLength(1)
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_active',
+    answeredCount: 1,
+  })
+})
+
+test('finish still broadcasts final state when final persistence enqueue rejects', async () => {
+  const deps = createDependencies({ persistenceRejects: true })
+  const socket = createSocket()
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  deps.setDurableSession({ ...quizSession, status: 'question_active', currentQuestionPosition: 1 })
+  deps.setLiveSession(activeLiveState())
+
+  try {
+    await deps.runtime.handleHostEvent({
+      connection: { role: 'host', quizSession },
+      event: { type: 'finish_quiz' },
+      socket,
+    })
+  } finally {
+    consoleError.mockRestore()
+  }
+
+  expect(deps.finishedLiveSessions).toEqual([quizSession.id])
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'finished',
+  })
+})
+
+test('next question uses live question order when it differs from durable order', async () => {
+  const deps = createDependencies()
+  const socket = createSocket()
+  deps.setDurableSession({ ...quizSession, status: 'question_reveal', currentQuestionPosition: 1 })
+  deps.setLiveSession({
+    ...activeLiveState({
+      questionOrderIds: ['question-2', 'question-1'],
+      currentQuestionId: 'question-2',
+      currentQuestionPosition: 1,
+    }),
+    status: 'question_reveal',
+    endsAt: null,
+  })
+
+  await deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'next_question' },
+    socket,
+  })
+
+  expect(deps.activeQuestions.at(-1)).toMatchObject({
+    quizSessionId: quizSession.id,
+    questionId: 'question-1',
+    questionPosition: 2,
+  })
+})
+
+test('concurrent start commands serialize to a single active question mutation', async () => {
+  const deps = createDependencies({ deferActiveQuestion: true })
+  const firstSocket = createSocket()
+  const secondSocket = createSocket()
+
+  const firstStart = deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'start_quiz' },
+    socket: firstSocket,
+  })
+  const secondStart = deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'start_quiz' },
+    socket: secondSocket,
+  })
+
+  await Promise.resolve()
+  deps.releaseActiveQuestion()
+  await Promise.all([firstStart, secondStart])
+
+  expect(deps.activeQuestions).toHaveLength(1)
+  expect(parseSent(secondSocket)).toMatchObject({
+    type: 'runtime_error',
+    code: 'invalid_runtime_state',
+  })
+})
+
+test('start rolls durable state back when activating live question fails', async () => {
+  const deps = createDependencies({ activeQuestionRejects: true })
+  const socket = createSocket()
+  let thrown: unknown
+
+  try {
+    await deps.runtime.handleHostEvent({
+      connection: { role: 'host', quizSession },
+      event: { type: 'start_quiz' },
+      socket,
+    })
+  } catch (error) {
+    thrown = error
+  }
+
+  expect(thrown).toBeInstanceOf(Error)
+  expect((thrown as Error).message).toBe('live state unavailable')
+  expect(deps.updates).toEqual([
+    {
+      id: quizSession.id,
+      input: { status: 'question_active', currentQuestionPosition: 1, startedAt: later },
+    },
+    {
+      id: quizSession.id,
+      input: {
+        status: 'waiting_room',
+        currentQuestionPosition: null,
+        startedAt: null,
+        finishedAt: null,
+      },
+    },
+  ])
+  expect(deps.activeQuestions).toEqual([])
+  expect(deps.scheduledTimers).toEqual([])
+  expect(deps.hostEvents).toEqual([])
 })
