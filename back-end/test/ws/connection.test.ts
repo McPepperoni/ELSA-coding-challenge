@@ -670,6 +670,108 @@ test('participant initial-state send failure clears recorded connection and skip
   expect(registeredParticipants).toEqual([])
 })
 
+test('participant presenter failure after Redis record clears connection and closes socket', async () => {
+  const socket = createSocket()
+  const participantConnections: Array<{
+    quizSessionId: string
+    participantId: string
+    connectionId: string
+    connectedAt: Date
+  }> = []
+  const clearedParticipantConnections: Array<{
+    quizSessionId: string
+    participantId: string
+    connectionId: string
+  }> = []
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      async presentParticipantState() {
+        throw new Error('state unavailable')
+      },
+    },
+    liveSessions: {
+      async recordParticipantConnection(input) {
+        participantConnections.push(input)
+      },
+      async clearParticipantConnection(input) {
+        clearedParticipantConnections.push(input)
+      },
+    },
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
+
+  expect(participantConnections).toHaveLength(1)
+  expect(clearedParticipantConnections).toEqual([
+    {
+      quizSessionId: quizSession.id,
+      participantId: participant.id,
+      connectionId: participantConnections[0]?.connectionId,
+    },
+  ])
+  expect(parseSent(socket)).toEqual({
+    type: 'protocol_error',
+    code: 'connection_state_unavailable',
+    message: 'Connection state is not available.',
+  })
+  expect(socket.closed).toBe(true)
+})
+
+test('participant presenter failure with throwing socket still clears connection', async () => {
+  const socket = {
+    sent: [] as string[],
+    closed: false,
+    send() {
+      throw new Error('socket unavailable')
+    },
+    close() {
+      this.closed = true
+    },
+  }
+  const participantConnections: Array<{
+    quizSessionId: string
+    participantId: string
+    connectionId: string
+    connectedAt: Date
+  }> = []
+  const clearedParticipantConnections: Array<{
+    quizSessionId: string
+    participantId: string
+    connectionId: string
+  }> = []
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      async presentParticipantState() {
+        throw new Error('state unavailable')
+      },
+    },
+    liveSessions: {
+      async recordParticipantConnection(input) {
+        participantConnections.push(input)
+      },
+      async clearParticipantConnection(input) {
+        clearedParticipantConnections.push(input)
+      },
+    },
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
+
+  expect(participantConnections).toHaveLength(1)
+  expect(clearedParticipantConnections).toEqual([
+    {
+      quizSessionId: quizSession.id,
+      participantId: participant.id,
+      connectionId: participantConnections[0]?.connectionId,
+    },
+  ])
+  expect(socket.closed).toBe(true)
+})
+
 test('participant stale socket close does not clear a newer connection', async () => {
   const connectionStore: {
     connectedParticipantId: string | null

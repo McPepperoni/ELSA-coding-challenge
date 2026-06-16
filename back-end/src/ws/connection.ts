@@ -392,6 +392,8 @@ const openParticipantConnection = async ({
   try {
     event = await presenter.presentParticipantState(connection.participant, connection.quizSession)
   } catch {
+    await liveSessions.clearParticipantConnection(participantConnection).catch(logParticipantCleanupFailure)
+
     if (!shouldSkipRegistration()) {
       sendConnectionStateUnavailable(socket)
     }
@@ -464,12 +466,17 @@ const trySendEvent = (socket: ConnectionSocket, event: ServerEvent): boolean => 
 }
 
 const sendConnectionStateUnavailable = (socket: ConnectionSocket): void => {
-  sendEvent(socket, {
+  trySendEvent(socket, {
     type: 'protocol_error',
     code: 'connection_state_unavailable',
     message: 'Connection state is not available.',
   })
-  socket.close()
+
+  try {
+    socket.close()
+  } catch {
+    console.error('Failed to close WebSocket after unavailable connection state')
+  }
 }
 
 const logParticipantCleanupFailure = (error: unknown): void => {
