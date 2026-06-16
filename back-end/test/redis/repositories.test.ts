@@ -159,10 +159,12 @@ test('accepts only the first answer lock for a participant question pair', async
     questionId: 'question-1',
   })
 
+  expect(await answerLocks.hasParticipantAnswered(input)).toBe(false)
   expect(await answerLocks.acceptFirstAnswer(input)).toEqual({
     accepted: true,
     answeredCount: 1,
   })
+  expect(await answerLocks.hasParticipantAnswered(input)).toBe(true)
   expect(await answerLocks.acceptFirstAnswer(input)).toEqual({
     accepted: false,
     answeredCount: 1,
@@ -183,6 +185,12 @@ test('accepts only the first answer lock for a participant question pair', async
       questionId: 'question-1',
     }),
   ).toBe(2)
+
+  await answerLocks.resetQuestionAnswers({
+    quizSessionId,
+    questionId: 'question-1',
+  })
+  expect(await answerLocks.hasParticipantAnswered(input)).toBe(false)
 })
 
 test('orders live leaderboard using score and deterministic tie breakers', async () => {

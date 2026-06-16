@@ -129,6 +129,13 @@ export const createParticipantStatePresenter = (dependencies: StatePresenterDepe
       endsAt: resolved.endsAt,
     } as const
 
+    if (resolved.status === 'finished') {
+      return {
+        ...base,
+        leaderboard: await readLeaderboard(dependencies, quizSession.id),
+      }
+    }
+
     if (resolved.status !== 'question_active') {
       return base
     }

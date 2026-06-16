@@ -338,6 +338,32 @@ test('presents participant active reconnect state with answered status', async (
   })
 })
 
+test('presents participant finished reconnect state with leaderboard and no question payload', async () => {
+  const event = await createParticipantStatePresenter(
+    createPresenterDependencies('finished'),
+  ).presentParticipantState(participant, quizSession)
+
+  expect(event).toMatchObject({
+    type: 'session_state',
+    view: 'participant',
+    status: 'finished',
+    currentQuestionPosition: null,
+    leaderboard: [
+      { participantId: participant.id, rank: 1, score: 1000 },
+      { participantId: secondParticipant.id, rank: 2, score: 500 },
+    ],
+  })
+  expect(event).not.toHaveProperty('question')
+
+  const payload = JSON.stringify(event)
+
+  expect(payload).not.toContain('Who wrote the first computer program?')
+  expect(payload).not.toContain('Ada Lovelace')
+  expect(payload).not.toContain('Grace Hopper')
+  expect(payload).not.toContain('isCorrect')
+  expect(payload).not.toContain('correctOptionId')
+})
+
 test('participant active payload does not expose prompt, option text, or correctness', async () => {
   const event = await createParticipantStatePresenter(
     createPresenterDependencies('question_active', { hasAnswered: true }),

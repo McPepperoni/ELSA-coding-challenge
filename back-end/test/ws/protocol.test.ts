@@ -115,3 +115,28 @@ test('serializes protocol error server events', () => {
     }),
   ).toBe('{"type":"protocol_error","code":"invalid_event_shape","message":"Message shape is not supported."}')
 })
+
+test('serializes session state date fields as ISO strings', () => {
+  expect(
+    serializeServerEvent({
+      type: 'session_state',
+      view: 'participant',
+      quizSessionId: 'session-1',
+      quizCode: 'ABC12345',
+      status: 'question_active',
+      currentQuestionPosition: 1,
+      totalQuestions: 2,
+      startedAt: new Date('2026-06-16T10:00:00.000Z'),
+      endsAt: new Date('2026-06-16T10:00:30.000Z'),
+      question: {
+        id: 'question-1',
+        position: 1,
+        options: [{ id: 'option-1', position: 1 }],
+      },
+      hasAnswered: false,
+      canSubmit: true,
+    }),
+  ).toBe(
+    '{"type":"session_state","view":"participant","quizSessionId":"session-1","quizCode":"ABC12345","status":"question_active","currentQuestionPosition":1,"totalQuestions":2,"startedAt":"2026-06-16T10:00:00.000Z","endsAt":"2026-06-16T10:00:30.000Z","question":{"id":"question-1","position":1,"options":[{"id":"option-1","position":1}]},"hasAnswered":false,"canSubmit":true}',
+  )
+})
