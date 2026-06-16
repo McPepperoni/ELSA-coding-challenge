@@ -178,12 +178,13 @@ export const createHostConnectionEvents = ({
   runtimeHandlers = defaultRuntimeHandlers,
 }: HostConnectionEventsInput): ConnectionEvents => {
   let unregisterSocket: (() => void) | null = null
+  let isClosed = false
 
   return {
     onOpen(_event, socket) {
       void sendInitialState(socket, () => presenter.presentHostState(connection.quizSession)).then(
         (didSendInitialState) => {
-          if (didSendInitialState) {
+          if (didSendInitialState && !isClosed) {
             unregisterSocket = hub.registerHostSocket({
               quizSessionId: connection.quizSession.id,
               socket,
@@ -198,6 +199,7 @@ export const createHostConnectionEvents = ({
     },
 
     onClose() {
+      isClosed = true
       unregisterSocket?.()
       unregisterSocket = null
     },
@@ -213,6 +215,7 @@ export const createParticipantConnectionEvents = ({
 }: ParticipantConnectionEventsInput): ConnectionEvents => {
   const connectionId = randomUUID()
   let unregisterSocket: (() => void) | null = null
+  let isClosed = false
 
   return {
     onOpen(_event, socket) {
@@ -226,7 +229,7 @@ export const createParticipantConnectionEvents = ({
 
         return presenter.presentParticipantState(connection.participant, connection.quizSession)
       }).then((didSendInitialState) => {
-        if (didSendInitialState) {
+        if (didSendInitialState && !isClosed) {
           unregisterSocket = hub.registerParticipantSocket({
             quizSessionId: connection.quizSession.id,
             participantId: connection.participant.id,
@@ -241,6 +244,7 @@ export const createParticipantConnectionEvents = ({
     },
 
     onClose() {
+      isClosed = true
       unregisterSocket?.()
       unregisterSocket = null
       void liveSessions

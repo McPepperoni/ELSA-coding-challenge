@@ -62,6 +62,16 @@ const flushAsyncWork = async () => {
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
 }
 
+const createDeferred = <Value>() => {
+  let resolve!: (value: Value) => void
+
+  const promise = new Promise<Value>((innerResolve) => {
+    resolve = innerResolve
+  })
+
+  return { promise, resolve }
+}
+
 const createTrackingHub = () => {
   const registeredHosts: string[] = []
   const unregisteredHosts: string[] = []
@@ -328,6 +338,27 @@ test('failed host initial state does not register in injected hub', async () => 
   expect(registeredHosts).toEqual([])
 })
 
+test('host close before initial state resolves prevents later hub registration', async () => {
+  const socket = createSocket()
+  const { promise, resolve } = createDeferred<ServerEvent>()
+  const { hub, registeredHosts, unregisteredHosts } = createTrackingHub()
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => promise,
+    },
+    hub,
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  events.onClose?.(new CloseEvent('close'), socket)
+  resolve(hostState)
+  await flushAsyncWork()
+
+  expect(registeredHosts).toEqual([])
+  expect(unregisteredHosts).toEqual([])
+})
+
 test('host onOpen starts initial-state work without returning a promise', () => {
   const socket = createSocket()
   const events = createHostConnectionEvents({
@@ -417,6 +448,56 @@ test('participant onOpen registers in injected hub after Redis record and initia
       connectionId: participantConnections[0]?.connectionId,
     },
   ])
+})
+
+test('participant close before initial state resolves prevents later hub registration and still clears Redis connection', async () => {
+  const recordConnection = createDeferred<void>()
+  const socket = createSocket()
+  const participantConnections: Array<{
+    quizSessionId: string
+    participantId: string
+    connectionId: string
+    connectedAt: Date
+  }> = []
+  const clearedParticipantConnections: Array<{
+    quizSessionId: string
+    participantId: string
+    connectionId: string
+  }> = []
+  const { hub, registeredParticipants, unregisteredParticipants } = createTrackingHub()
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions: {
+      async recordParticipantConnection(input) {
+        participantConnections.push(input)
+        await recordConnection.promise
+      },
+      async clearParticipantConnection(input) {
+        clearedParticipantConnections.push(input)
+      },
+    },
+    hub,
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  events.onClose?.(new CloseEvent('close'), socket)
+  await flushAsyncWork()
+  recordConnection.resolve()
+  await flushAsyncWork()
+
+  expect(participantConnections).toHaveLength(1)
+  expect(clearedParticipantConnections).toEqual([
+    {
+      quizSessionId: quizSession.id,
+      participantId: participant.id,
+      connectionId: participantConnections[0]?.connectionId,
+    },
+  ])
+  expect(registeredParticipants).toEqual([])
+  expect(unregisteredParticipants).toEqual([])
 })
 
 test('participant stale socket close does not clear a newer connection', async () => {
