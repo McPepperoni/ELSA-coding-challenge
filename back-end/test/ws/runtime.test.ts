@@ -160,10 +160,15 @@ const createDependencies = (
     deferActiveQuestion?: boolean
     activeQuestionRejects?: boolean
     deferScore?: boolean
+    clockNow?: Date
+    participants?: Participant[]
+    useRecordedLeaderboard?: boolean
   }> = {},
 ) => {
   const activeQuestionDeferred = createDeferred()
   const scoreDeferred = createDeferred()
+  let currentTime = options.clockNow ?? later
+  let sessionParticipants = [...(options.participants ?? [participant, otherParticipant])]
   let durableSession: QuizSession = { ...quizSession }
   let liveSession: LiveSessionState | null = {
     quizSessionId: quizSession.id,
@@ -174,9 +179,10 @@ const createDependencies = (
     startedAt: null,
     endsAt: null,
   }
-  let hasAnswered = false
+  let hasAnsweredOverride: boolean | null = null
   let acceptedLock = true
-  let answeredCount = 0
+  const answeredParticipantIdsByQuestion = new Map<string, Set<string>>()
+  const leaderboardStatesByParticipant = new Map<string, LiveLeaderboardParticipantState>()
   const updates: Array<{ id: string; input: Partial<QuizSession> }> = []
   const activeQuestions: Array<{
     quizSessionId: string
@@ -225,6 +231,46 @@ const createDependencies = (
     },
   ]
 
+  const answeredParticipantsForQuestion = (questionId: string): Set<string> => {
+    const existing = answeredParticipantIdsByQuestion.get(questionId)
+    if (existing) {
+      return existing
+    }
+
+    const next = new Set<string>()
+    answeredParticipantIdsByQuestion.set(questionId, next)
+    return next
+  }
+
+  const readRecordedLeaderboard = (limit?: number): LiveLeaderboardEntry[] => {
+    const entries = Array.from(leaderboardStatesByParticipant.values())
+      .sort((left, right) => {
+        const scoreOrder = right.score - left.score
+        if (scoreOrder !== 0) {
+          return scoreOrder
+        }
+
+        const leftCorrectAt = left.lastCorrectSubmissionAt?.getTime() ?? Number.MAX_SAFE_INTEGER
+        const rightCorrectAt = right.lastCorrectSubmissionAt?.getTime() ?? Number.MAX_SAFE_INTEGER
+        if (leftCorrectAt !== rightCorrectAt) {
+          return leftCorrectAt - rightCorrectAt
+        }
+
+        const joinedOrder = left.joinedAt.getTime() - right.joinedAt.getTime()
+        if (joinedOrder !== 0) {
+          return joinedOrder
+        }
+
+        return left.participantId.localeCompare(right.participantId)
+      })
+      .slice(0, limit)
+
+    return entries.map((entry, index) => ({
+      ...entry,
+      rank: index + 1,
+    }))
+  }
+
   const hub: SocketHub = {
     registerHostSocket() {
       return () => undefined
@@ -244,7 +290,7 @@ const createDependencies = (
   }
 
   const runtime = createLiveQuizRuntime({
-    clock: { now: () => later },
+    clock: { now: () => currentTime },
     quizSessions: {
       findById: async () => durableSession,
       async updateQuizSessionState(id, input) {
@@ -261,7 +307,7 @@ const createDependencies = (
       findFullQuestionSetById: async () => questionSet,
     },
     participants: {
-      listBySession: async () => [participant, otherParticipant],
+      listBySession: async () => sessionParticipants,
     },
     liveSessions: {
       readLiveSession: async () => liveSession,
@@ -306,19 +352,20 @@ const createDependencies = (
       },
     },
     answerLocks: {
-      async acceptFirstAnswer() {
-        if (acceptedLock) {
-          hasAnswered = true
-          answeredCount += 1
+      async acceptFirstAnswer(input) {
+        const answeredParticipants = answeredParticipantsForQuestion(input.questionId)
+        if (acceptedLock && !answeredParticipants.has(input.participantId)) {
+          answeredParticipants.add(input.participantId)
         }
-        return { accepted: acceptedLock, answeredCount }
+        return { accepted: acceptedLock, answeredCount: answeredParticipants.size }
       },
-      readAnsweredCount: async () => answeredCount,
-      hasParticipantAnswered: async () => hasAnswered,
+      readAnsweredCount: async (input) => answeredParticipantsForQuestion(input.questionId).size,
+      hasParticipantAnswered: async (input) =>
+        hasAnsweredOverride ?? answeredParticipantsForQuestion(input.questionId).has(input.participantId),
       async resetQuestionAnswers(input) {
         resetLocks.push(input)
-        hasAnswered = false
-        answeredCount = 0
+        hasAnsweredOverride = null
+        answeredParticipantIdsByQuestion.delete(input.questionId)
       },
     },
     leaderboard: {
@@ -329,6 +376,21 @@ const createDependencies = (
         }
         operations.push('score')
         scoredAnswers.push(input)
+        if (options.useRecordedLeaderboard) {
+          const previous = leaderboardStatesByParticipant.get(input.participantId)
+          const next = {
+            participantId: input.participantId,
+            displayName: input.displayName,
+            score: (previous?.score ?? 0) + input.scoreAwarded,
+            correctAnswerCount: (previous?.correctAnswerCount ?? 0) + (input.isCorrect ? 1 : 0),
+            lastCorrectSubmissionAt: input.isCorrect
+              ? input.submittedAt
+              : previous?.lastCorrectSubmissionAt ?? null,
+            joinedAt: input.joinedAt,
+          } satisfies LiveLeaderboardParticipantState
+          leaderboardStatesByParticipant.set(input.participantId, next)
+          return next
+        }
         return {
           participantId: input.participantId,
           displayName: input.displayName,
@@ -340,9 +402,15 @@ const createDependencies = (
       },
       async readLeaderboard() {
         operations.push('readLeaderboard')
+        if (options.useRecordedLeaderboard) {
+          return readRecordedLeaderboard()
+        }
         return leaderboardEntries
       },
-      readTopLeaderboardEntries: async () => leaderboardEntries,
+      readTopLeaderboardEntries: async (_quizSessionId, count) =>
+        options.useRecordedLeaderboard
+          ? readRecordedLeaderboard(count ?? 3)
+          : leaderboardEntries.slice(0, count),
     },
     timers: {
       scheduleQuestionEnd(input) {
@@ -368,14 +436,20 @@ const createDependencies = (
 
   return {
     runtime,
+    setClock: (value: Date) => {
+      currentTime = value
+    },
     setDurableSession: (session: QuizSession) => {
       durableSession = session
     },
     setLiveSession: (state: LiveSessionState | null) => {
       liveSession = state
     },
+    setParticipants: (participants: Participant[]) => {
+      sessionParticipants = participants
+    },
     setHasAnswered: (value: boolean) => {
-      hasAnswered = value
+      hasAnsweredOverride = value
     },
     setAcceptedLock: (value: boolean) => {
       acceptedLock = value
@@ -416,6 +490,322 @@ const waitForCondition = async (
 
   throw new Error(message)
 }
+
+test('full runtime flow broadcasts waiting room, two questions, reveal leaderboard, final state, and secret participant payloads', async () => {
+  const firstQuestionStartedAt = new Date('2026-06-16T10:01:00.000Z')
+  const firstQuestionEndsAt = new Date('2026-06-16T10:01:10.000Z')
+  const secondQuestionStartedAt = new Date('2026-06-16T10:01:11.000Z')
+  const secondQuestionEndsAt = new Date('2026-06-16T10:01:41.000Z')
+  const deps = createDependencies({
+    clockNow: firstQuestionStartedAt,
+    participants: [participant],
+    useRecordedLeaderboard: true,
+  })
+  const hostSocket = createSocket()
+  const adaSocket = createSocket()
+  const graceSocket = createSocket()
+
+  const latestParticipantState = (participantId: string): ServerEvent | undefined =>
+    deps.participantEvents
+      .filter(({ participantId: eventParticipantId, event }) =>
+        eventParticipantId === participantId &&
+        event.type === 'session_state' &&
+        event.view === 'participant')
+      .at(-1)?.event
+
+  const expectSecretParticipantPayload = (
+    event: ServerEvent | undefined,
+    hiddenTexts: readonly string[],
+  ): void => {
+    expect(event).toMatchObject({
+      type: 'session_state',
+      view: 'participant',
+      status: 'question_active',
+      question: {
+        options: [
+          { id: expect.any(String), position: 1 },
+          { id: expect.any(String), position: 2 },
+        ],
+      },
+    })
+    const serializedEvent = JSON.stringify(event)
+    for (const hiddenText of hiddenTexts) {
+      expect(serializedEvent).not.toContain(hiddenText)
+    }
+    expect(serializedEvent).not.toContain('correctOptionId')
+  }
+
+  await deps.runtime.handleHostConnected?.({
+    connection: { role: 'host', quizSession },
+    socket: hostSocket,
+  })
+
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'waiting_room',
+    participantCount: 1,
+    participants: [{ id: participant.id, displayName: participant.displayName }],
+  })
+
+  deps.setParticipants([participant, otherParticipant])
+  await deps.runtime.handleParticipantConnected?.({
+    connection: { role: 'participant', participant: otherParticipant, quizSession },
+    socket: graceSocket,
+  })
+
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'waiting_room',
+    participantCount: 2,
+    participants: [
+      { id: participant.id, displayName: participant.displayName },
+      { id: otherParticipant.id, displayName: otherParticipant.displayName },
+    ],
+  })
+
+  await deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'start_quiz' },
+    socket: hostSocket,
+  })
+
+  expect(deps.activeQuestions[0]).toMatchObject({
+    quizSessionId: quizSession.id,
+    questionId: 'question-1',
+    questionPosition: 1,
+    startedAt: firstQuestionStartedAt,
+    endsAt: firstQuestionEndsAt,
+  })
+  expect(deps.scheduledTimers[0]).toMatchObject({
+    quizSessionId: quizSession.id,
+    endsAt: firstQuestionEndsAt,
+  })
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_active',
+    question: { id: 'question-1', prompt: 'Who wrote the first compiler?', timeLimitSeconds: 10 },
+    answeredCount: 0,
+  })
+  expectSecretParticipantPayload(latestParticipantState(participant.id), [
+    'Who wrote the first compiler?',
+    'Grace Hopper',
+    'Ada Lovelace',
+  ])
+  expectSecretParticipantPayload(latestParticipantState(otherParticipant.id), [
+    'Who wrote the first compiler?',
+    'Grace Hopper',
+    'Ada Lovelace',
+  ])
+
+  deps.setClock(new Date('2026-06-16T10:01:02.000Z'))
+  await deps.runtime.handleParticipantEvent({
+    connection: { role: 'participant', participant, quizSession },
+    event: { type: 'submit_answer', selectedOptionId: 'option-1' },
+    socket: adaSocket,
+  })
+
+  expect(parseSent(adaSocket)).toEqual({
+    type: 'answer_result',
+    status: 'accepted',
+    selectedOptionId: 'option-1',
+  })
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_active',
+    answeredCount: 1,
+  })
+  expect(latestParticipantState(participant.id)).toMatchObject({
+    type: 'session_state',
+    view: 'participant',
+    status: 'question_active',
+    hasAnswered: true,
+    canSubmit: false,
+  })
+  expect(latestParticipantState(otherParticipant.id)).toMatchObject({
+    type: 'session_state',
+    view: 'participant',
+    status: 'question_active',
+    hasAnswered: false,
+    canSubmit: true,
+  })
+
+  await deps.runtime.handleParticipantEvent({
+    connection: { role: 'participant', participant, quizSession },
+    event: { type: 'submit_answer', selectedOptionId: 'option-2' },
+    socket: adaSocket,
+  })
+
+  expect(parseSent(adaSocket, 1)).toMatchObject({
+    type: 'answer_result',
+    status: 'rejected',
+    selectedOptionId: 'option-2',
+    reason: 'duplicate_answer',
+  })
+
+  deps.setClock(new Date('2026-06-16T10:01:04.000Z'))
+  await deps.runtime.handleParticipantEvent({
+    connection: { role: 'participant', participant: otherParticipant, quizSession },
+    event: { type: 'submit_answer', selectedOptionId: 'option-2' },
+    socket: graceSocket,
+  })
+
+  expect(parseSent(graceSocket)).toEqual({
+    type: 'answer_result',
+    status: 'accepted',
+    selectedOptionId: 'option-2',
+  })
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_active',
+    answeredCount: 2,
+  })
+
+  deps.setClock(firstQuestionEndsAt)
+  await deps.scheduledTimers[0]?.onExpire(quizSession.id)
+
+  expect(deps.reveals[0]).toEqual({
+    quizSessionId: quizSession.id,
+    questionId: 'question-1',
+    questionPosition: 1,
+    startedAt: firstQuestionStartedAt,
+  })
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_reveal',
+    correctOptionId: 'option-1',
+    answeredCount: 2,
+    leaderboard: [
+      { participantId: participant.id, rank: 1, score: 100, correctAnswerCount: 1 },
+      { participantId: otherParticipant.id, rank: 2, score: 0, correctAnswerCount: 0 },
+    ],
+  })
+  expect(latestParticipantState(participant.id)).toMatchObject({
+    type: 'session_state',
+    view: 'participant',
+    status: 'question_reveal',
+  })
+  expect(JSON.stringify(latestParticipantState(participant.id))).not.toContain('Who wrote the first compiler?')
+
+  await deps.runtime.handleParticipantEvent({
+    connection: { role: 'participant', participant: otherParticipant, quizSession },
+    event: { type: 'submit_answer', selectedOptionId: 'option-1' },
+    socket: graceSocket,
+  })
+
+  expect(parseSent(graceSocket, 1)).toMatchObject({
+    type: 'answer_result',
+    status: 'rejected',
+    selectedOptionId: 'option-1',
+    reason: 'wrong_state',
+  })
+
+  deps.setClock(secondQuestionStartedAt)
+  await deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'next_question' },
+    socket: hostSocket,
+  })
+
+  expect(deps.activeQuestions[1]).toMatchObject({
+    quizSessionId: quizSession.id,
+    questionId: 'question-2',
+    questionPosition: 2,
+    startedAt: secondQuestionStartedAt,
+    endsAt: secondQuestionEndsAt,
+  })
+  expect(deps.scheduledTimers[1]).toMatchObject({
+    quizSessionId: quizSession.id,
+    endsAt: secondQuestionEndsAt,
+  })
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_active',
+    question: { id: 'question-2', timeLimitSeconds: 30 },
+    answeredCount: 0,
+  })
+  expectSecretParticipantPayload(latestParticipantState(participant.id), [
+    'What does CPU stand for?',
+    'Central Processing Unit',
+    'Computer Personal Unit',
+  ])
+
+  deps.setClock(new Date('2026-06-16T10:01:15.000Z'))
+  await deps.runtime.handleParticipantEvent({
+    connection: { role: 'participant', participant: otherParticipant, quizSession },
+    event: { type: 'submit_answer', selectedOptionId: 'option-3' },
+    socket: graceSocket,
+  })
+
+  expect(parseSent(graceSocket, 2)).toEqual({
+    type: 'answer_result',
+    status: 'accepted',
+    selectedOptionId: 'option-3',
+  })
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_active',
+    answeredCount: 1,
+  })
+
+  deps.setClock(secondQuestionEndsAt)
+  await deps.scheduledTimers[1]?.onExpire(quizSession.id)
+
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'question_reveal',
+    correctOptionId: 'option-3',
+    answeredCount: 1,
+    leaderboard: [
+      { participantId: participant.id, rank: 1, score: 100, correctAnswerCount: 1 },
+      { participantId: otherParticipant.id, rank: 2, score: 100, correctAnswerCount: 1 },
+    ],
+  })
+
+  await deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'next_question' },
+    socket: hostSocket,
+  })
+
+  expect(deps.finishedLiveSessions).toEqual([quizSession.id])
+  expect(deps.cancelledTimers).toContain(quizSession.id)
+  expect(deps.persistenceEvents.at(-1)).toMatchObject({
+    type: 'final_leaderboard',
+    quizSessionId: quizSession.id,
+    entries: [
+      { participantId: participant.id, rank: 1, score: 100, correctAnswerCount: 1 },
+      { participantId: otherParticipant.id, rank: 2, score: 100, correctAnswerCount: 1 },
+    ],
+    recordedAt: secondQuestionEndsAt,
+  })
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'finished',
+    leaderboard: [
+      { participantId: participant.id, rank: 1, score: 100 },
+      { participantId: otherParticipant.id, rank: 2, score: 100 },
+    ],
+  })
+  expect(latestParticipantState(participant.id)).toMatchObject({
+    type: 'session_state',
+    view: 'participant',
+    status: 'finished',
+    leaderboard: [
+      { participantId: participant.id, rank: 1, score: 100 },
+      { participantId: otherParticipant.id, rank: 2, score: 100 },
+    ],
+  })
+})
 
 test('host start begins first question with question-specific timer and secret participant payloads', async () => {
   const deps = createDependencies()
