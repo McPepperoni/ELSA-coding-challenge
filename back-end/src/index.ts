@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { env } from './config/env.js'
 
 const app = new Hono()
 
@@ -11,4 +12,8 @@ app.get('/', (c) => {
   return c.text(welcomeStrings.join('\n\n'))
 })
 
-export default app
+// AI Generated code <PURPOSE>: bind Bun server to typed runtime port
+export default {
+  port: env.PORT,
+  fetch: app.fetch.bind(app),
+}

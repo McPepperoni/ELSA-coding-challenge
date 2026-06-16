@@ -1,0 +1,13 @@
+# AI Generated code <PURPOSE>: frontend docker context exclusions
+node_modules
+dist
+dist-ssr
+.env
+.env.*
+!.env.template
+logs
+*.log
+.git
+.gitignore
+Dockerfile
+README.md
