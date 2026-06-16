@@ -23,9 +23,11 @@ test('awards zero points for rejected answer reasons', () => {
     'invalid_option',
     'unknown_participant',
     'wrong_state',
+    'inactive_question',
   ] as const
 
   expect(rejectedReasons.map((reason) => calculateRejectedAnswerScore({ reason }))).toEqual([
+    0,
     0,
     0,
     0,

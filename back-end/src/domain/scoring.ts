@@ -11,6 +11,7 @@ export type RejectedAnswerScoreReason =
   | 'invalid_option'
   | 'unknown_participant'
   | 'wrong_state'
+  | 'inactive_question'
 
 export type RejectedAnswerScoreInput = Readonly<{
   reason: RejectedAnswerScoreReason
