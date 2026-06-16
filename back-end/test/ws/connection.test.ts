@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
 
 import type { Participant, QuizSession } from '@/db/schema.js'
+import { createDefaultHttpApp } from '@/http/index.js'
 import type { ServerEvent } from '@/types/events.js'
 import {
   createHostConnectionEvents,
@@ -175,6 +176,17 @@ test('valid host route reaches the upgrade factory', async () => {
 
   expect(response.status).toBe(200)
   expect(await response.text()).toBe('upgraded')
+})
+
+test('default backend app factory exposes WebSocket host route behavior', async () => {
+  const app = createDefaultHttpApp()
+
+  const response = await app.request('/ws/host')
+
+  expect(response.status).toBe(401)
+  expect(await response.json()).toEqual({
+    error: { code: 'missing_token', message: 'WebSocket token is required.' },
+  })
 })
 
 test('host onOpen sends current host session state', async () => {
