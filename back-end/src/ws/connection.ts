@@ -1,4 +1,6 @@
 // AI Generated code <PURPOSE>: handle WebSocket upgrade routes and socket lifecycle events
+import { randomUUID } from 'node:crypto'
+
 import { Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/bun'
 import type { Context, Handler } from 'hono'
@@ -160,34 +162,40 @@ export const createParticipantConnectionEvents = ({
   connection,
   presenter,
   liveSessions,
-}: ParticipantConnectionEventsInput): ConnectionEvents => ({
-  onOpen(_event, socket) {
-    void sendInitialState(socket, async () => {
-      await liveSessions.recordParticipantConnection({
-        quizSessionId: connection.quizSession.id,
-        participantId: connection.participant.id,
-        connectedAt: new Date(),
-      })
+}: ParticipantConnectionEventsInput): ConnectionEvents => {
+  const connectionId = randomUUID()
 
-      return presenter.presentParticipantState(connection.participant, connection.quizSession)
-    })
-  },
+  return {
+    onOpen(_event, socket) {
+      void sendInitialState(socket, async () => {
+        await liveSessions.recordParticipantConnection({
+          quizSessionId: connection.quizSession.id,
+          participantId: connection.participant.id,
+          connectionId,
+          connectedAt: new Date(),
+        })
 
-  onMessage(event, socket) {
-    handleClientMessage('participant', event.data, socket)
-  },
+        return presenter.presentParticipantState(connection.participant, connection.quizSession)
+      })
+    },
 
-  onClose() {
-    void liveSessions
-      .clearParticipantConnection({
-        quizSessionId: connection.quizSession.id,
-        participantId: connection.participant.id,
-      })
-      .catch((error: unknown) => {
-        console.error('Failed to clear participant WebSocket connection', error)
-      })
-  },
-})
+    onMessage(event, socket) {
+      handleClientMessage('participant', event.data, socket)
+    },
+
+    onClose() {
+      void liveSessions
+        .clearParticipantConnection({
+          quizSessionId: connection.quizSession.id,
+          participantId: connection.participant.id,
+          connectionId,
+        })
+        .catch((error: unknown) => {
+          console.error('Failed to clear participant WebSocket connection', error)
+        })
+    },
+  }
+}
 
 const handleClientMessage = (
   role: SocketRole,

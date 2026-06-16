@@ -89,11 +89,13 @@ const createDependencies = () => {
   const participantConnections: Array<{
     quizSessionId: string
     participantId: string
+    connectionId: string
     connectedAt: Date
   }> = []
   const clearedParticipantConnections: Array<{
     quizSessionId: string
     participantId: string
+    connectionId: string
   }> = []
 
   return {
@@ -119,6 +121,7 @@ const createDependencies = () => {
         recordParticipantConnection: async (input: {
           quizSessionId: string
           participantId: string
+          connectionId: string
           connectedAt: Date
         }) => {
           participantConnections.push(input)
@@ -126,6 +129,7 @@ const createDependencies = () => {
         clearParticipantConnection: async (input: {
           quizSessionId: string
           participantId: string
+          connectionId: string
         }) => {
           clearedParticipantConnections.push(input)
         },
@@ -299,9 +303,71 @@ test('participant onOpen records connection and sends participant session state'
   expect(participantConnections[0]).toMatchObject({
     quizSessionId: quizSession.id,
     participantId: participant.id,
+    connectionId: expect.any(String),
   })
+  expect(participantConnections[0]?.connectionId).not.toBe('')
   expect(participantConnections[0]?.connectedAt).toBeInstanceOf(Date)
   expect(parseSent(socket)).toEqual(participantState)
+})
+
+test('participant stale socket close does not clear a newer connection', async () => {
+  const connectionStore: {
+    connectedParticipantId: string | null
+    storedConnectionId: string | null
+  } = {
+    connectedParticipantId: null,
+    storedConnectionId: null,
+  }
+  const liveSessions = {
+    readLiveSession: async () => null,
+    async recordParticipantConnection(input: {
+      participantId: string
+      connectionId: string
+    }) {
+      connectionStore.connectedParticipantId = input.participantId
+      connectionStore.storedConnectionId = input.connectionId
+    },
+    async clearParticipantConnection(input: {
+      participantId: string
+      connectionId: string
+    }) {
+      if (input.connectionId === connectionStore.storedConnectionId) {
+        connectionStore.connectedParticipantId = null
+        connectionStore.storedConnectionId = null
+      }
+    },
+  }
+  const firstSocketEvents = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions,
+  })
+  const secondSocketEvents = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions,
+  })
+
+  firstSocketEvents.onOpen?.(new Event('open'), createSocket())
+  await flushAsyncWork()
+  const firstConnectionId = connectionStore.storedConnectionId
+
+  secondSocketEvents.onOpen?.(new Event('open'), createSocket())
+  await flushAsyncWork()
+  const secondConnectionId = connectionStore.storedConnectionId
+
+  firstSocketEvents.onClose?.(new CloseEvent('close'), createSocket())
+  await flushAsyncWork()
+
+  expect(firstConnectionId).toEqual(expect.any(String))
+  expect(secondConnectionId).toEqual(expect.any(String))
+  expect(secondConnectionId).not.toBe(firstConnectionId)
+  expect(connectionStore.connectedParticipantId).toBe(participant.id)
+  expect(connectionStore.storedConnectionId).toBe(secondConnectionId)
 })
 
 test('participant onClose clears participant connection', async () => {
@@ -319,7 +385,11 @@ test('participant onClose clears participant connection', async () => {
   await flushAsyncWork()
 
   expect(clearedParticipantConnections).toEqual([
-    { quizSessionId: quizSession.id, participantId: participant.id },
+    {
+      quizSessionId: quizSession.id,
+      participantId: participant.id,
+      connectionId: expect.any(String),
+    },
   ])
 })
 
