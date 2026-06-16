@@ -1,3 +1,5 @@
+import { websocket } from 'hono/bun'
+
 import { env } from './config/env.js'
 import { createDefaultHttpApp } from './http/index.js'
 import { connectRedis } from './redis/client.js'
@@ -10,4 +12,5 @@ const app = createDefaultHttpApp()
 export default {
   port: env.PORT,
   fetch: app.fetch.bind(app),
+  websocket,
 }

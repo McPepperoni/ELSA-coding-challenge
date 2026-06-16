@@ -29,12 +29,19 @@ export type SetActiveQuestionInput = Readonly<{
 export type ParticipantConnectionInput = Readonly<{
   quizSessionId: string
   participantId: string
+  connectionId: string
   connectedAt: Date
 }>
 
 export type ClearParticipantConnectionInput = Readonly<{
   quizSessionId: string
   participantId: string
+  connectionId: string
+}>
+
+type ParticipantConnectionState = Readonly<{
+  connectionId: string
+  connectedAt: string
 }>
 
 const stateKey = (quizSessionId: string): string => `quiz:${quizSessionId}:live:state`
@@ -75,6 +82,38 @@ const parseLiveSession = (
     endsAt: nullableDate(fields.endsAt),
   }
 }
+
+const serializeParticipantConnection = (
+  input: ParticipantConnectionInput,
+): string =>
+  JSON.stringify({
+    connectionId: input.connectionId,
+    connectedAt: input.connectedAt.toISOString(),
+  } satisfies ParticipantConnectionState)
+
+const clearParticipantConnectionScript = `
+local current = redis.call('HGET', KEYS[1], ARGV[1])
+if not current then
+  return 0
+end
+
+local ok, decoded = pcall(cjson.decode, current)
+if ok and decoded["connectionId"] == ARGV[2] then
+  return redis.call('HDEL', KEYS[1], ARGV[1])
+end
+
+return 0
+`
+
+type RedisEvalClient = RedisClient & Readonly<{
+  eval: (
+    script: string,
+    options: Readonly<{
+      keys: readonly string[]
+      arguments: readonly string[]
+    }>,
+  ) => Promise<unknown>
+}>
 
 export const createLiveSessionRepository = (client: RedisClient = redisClient) => {
   const readLiveSession = async (quizSessionId: string): Promise<LiveSessionState | null> => {
@@ -153,11 +192,12 @@ export const createLiveSessionRepository = (client: RedisClient = redisClient) =
     try {
       required(input.quizSessionId, 'Quiz session id')
       required(input.participantId, 'Participant id')
+      required(input.connectionId, 'Connection id')
 
       await client.hSet(
         connectionsKey(input.quizSessionId),
         input.participantId,
-        input.connectedAt.toISOString(),
+        serializeParticipantConnection(input),
       )
     } catch (error) {
       throw wrapRedisError('record participant connection', error)
@@ -168,8 +208,12 @@ export const createLiveSessionRepository = (client: RedisClient = redisClient) =
     try {
       required(input.quizSessionId, 'Quiz session id')
       required(input.participantId, 'Participant id')
+      required(input.connectionId, 'Connection id')
 
-      await client.hDel(connectionsKey(input.quizSessionId), input.participantId)
+      await (client as RedisEvalClient).eval(clearParticipantConnectionScript, {
+        keys: [connectionsKey(input.quizSessionId)],
+        arguments: [input.participantId, input.connectionId],
+      })
     } catch (error) {
       throw wrapRedisError('clear participant connection', error)
     }

@@ -65,6 +65,52 @@ const getClientOrSkip = (): RedisClient | null => {
   return client
 }
 
+const createFakeRedisClient = (): RedisClient => {
+  const hashes = new Map<string, Map<string, string>>()
+  const getHash = (key: string): Map<string, string> => {
+    let hash = hashes.get(key)
+    if (!hash) {
+      hash = new Map<string, string>()
+      hashes.set(key, hash)
+    }
+
+    return hash
+  }
+
+  return {
+    async hSet(key: string, field: string, value: string) {
+      getHash(key).set(field, value)
+      return 1
+    },
+    async hGetAll(key: string) {
+      return Object.fromEntries(getHash(key))
+    },
+    async hGet(key: string, field: string) {
+      return getHash(key).get(field) ?? null
+    },
+    async hDel(key: string, field: string) {
+      return getHash(key).delete(field) ? 1 : 0
+    },
+    async eval(_script: string, options: { keys: string[]; arguments: string[] }) {
+      const [key] = options.keys
+      const [participantId, connectionId] = options.arguments
+      const hash = getHash(key ?? '')
+      const current = hash.get(participantId ?? '')
+
+      if (!current) {
+        return 0
+      }
+
+      const parsed = JSON.parse(current) as { connectionId?: string }
+      if (parsed.connectionId === connectionId) {
+        return hash.delete(participantId ?? '') ? 1 : 0
+      }
+
+      return 0
+    },
+  } as unknown as RedisClient
+}
+
 test('initializes and reads live quiz session state', async () => {
   const redis = getClientOrSkip()
   if (!redis) {
@@ -116,16 +162,36 @@ test('stores active question metadata and participant connection state', async (
   await liveSessions.recordParticipantConnection({
     quizSessionId,
     participantId: 'participant-1',
+    connectionId: 'connection-a',
     connectedAt: new Date('2026-01-01T00:00:05.000Z'),
   })
   await liveSessions.recordParticipantConnection({
     quizSessionId,
+    participantId: 'participant-1',
+    connectionId: 'connection-b',
+    connectedAt: new Date('2026-01-01T00:00:06.000Z'),
+  })
+  await liveSessions.recordParticipantConnection({
+    quizSessionId,
     participantId: 'participant-2',
+    connectionId: 'connection-c',
     connectedAt: new Date('2026-01-01T00:00:06.000Z'),
   })
   await liveSessions.clearParticipantConnection({
     quizSessionId,
     participantId: 'participant-1',
+    connectionId: 'connection-a',
+  })
+
+  expect(await liveSessions.readConnectedParticipantIds(quizSessionId)).toEqual([
+    'participant-1',
+    'participant-2',
+  ])
+
+  await liveSessions.clearParticipantConnection({
+    quizSessionId,
+    participantId: 'participant-1',
+    connectionId: 'connection-b',
   })
 
   expect(await liveSessions.readLiveSession(quizSessionId)).toMatchObject({
@@ -159,10 +225,12 @@ test('accepts only the first answer lock for a participant question pair', async
     questionId: 'question-1',
   })
 
+  expect(await answerLocks.hasParticipantAnswered(input)).toBe(false)
   expect(await answerLocks.acceptFirstAnswer(input)).toEqual({
     accepted: true,
     answeredCount: 1,
   })
+  expect(await answerLocks.hasParticipantAnswered(input)).toBe(true)
   expect(await answerLocks.acceptFirstAnswer(input)).toEqual({
     accepted: false,
     answeredCount: 1,
@@ -183,6 +251,45 @@ test('accepts only the first answer lock for a participant question pair', async
       questionId: 'question-1',
     }),
   ).toBe(2)
+
+  await answerLocks.resetQuestionAnswers({
+    quizSessionId,
+    questionId: 'question-1',
+  })
+  expect(await answerLocks.hasParticipantAnswered(input)).toBe(false)
+})
+
+test('clears participant connections only for the matching socket identity', async () => {
+  const liveSessions = createLiveSessionRepository(createFakeRedisClient())
+  const quizSessionId = sessionId()
+
+  await liveSessions.recordParticipantConnection({
+    quizSessionId,
+    participantId: 'participant-1',
+    connectionId: 'connection-a',
+    connectedAt: new Date('2026-01-01T00:00:05.000Z'),
+  })
+  await liveSessions.recordParticipantConnection({
+    quizSessionId,
+    participantId: 'participant-1',
+    connectionId: 'connection-b',
+    connectedAt: new Date('2026-01-01T00:00:06.000Z'),
+  })
+  await liveSessions.clearParticipantConnection({
+    quizSessionId,
+    participantId: 'participant-1',
+    connectionId: 'connection-a',
+  })
+
+  expect(await liveSessions.readConnectedParticipantIds(quizSessionId)).toEqual(['participant-1'])
+
+  await liveSessions.clearParticipantConnection({
+    quizSessionId,
+    participantId: 'participant-1',
+    connectionId: 'connection-b',
+  })
+
+  expect(await liveSessions.readConnectedParticipantIds(quizSessionId)).toEqual([])
 })
 
 test('orders live leaderboard using score and deterministic tie breakers', async () => {
