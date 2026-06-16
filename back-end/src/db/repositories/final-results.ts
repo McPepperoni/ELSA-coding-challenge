@@ -11,6 +11,7 @@ export type ReplaceFinalResultInput = Readonly<{
   correctAnswerCount: number
   lastCorrectSubmissionAt?: Date | null
   joinedAt: Date
+  recordedAt?: Date
 }>
 
 const assertFinalResultInput = (input: ReplaceFinalResultInput): void => {
@@ -70,6 +71,7 @@ export const finalResultsRepository = {
           correctAnswerCount: row.correctAnswerCount,
           lastCorrectSubmissionAt: row.lastCorrectSubmissionAt ?? null,
           joinedAt: row.joinedAt,
+          recordedAt: row.recordedAt,
         })),
       )
 

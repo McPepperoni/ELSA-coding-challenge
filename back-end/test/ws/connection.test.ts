@@ -1220,3 +1220,11 @@ test('Bun server entrypoint exports Hono websocket handler', async () => {
   expect(source).toContain("import { websocket } from 'hono/bun'")
   expect(source).toContain('websocket,')
 })
+
+test('default WebSocket routes wire the real persistence worker into the runtime', async () => {
+  const source = await readFile(new URL('../../src/ws/connection.ts', import.meta.url), 'utf8')
+
+  expect(source).toContain("import { createPersistenceWorker } from '@/workers/index.js'")
+  expect(source).toContain('persistenceSink: createPersistenceWorker()')
+  expect(source).not.toContain('persistenceSink: noopPersistenceEventSink')
+})
