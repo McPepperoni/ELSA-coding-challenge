@@ -1,9 +1,19 @@
 // AI Generated code <PURPOSE>: verify typed Redis client wrapper error behavior
-import { expect, test } from 'bun:test'
+import { afterAll, expect, test } from 'bun:test'
 
-process.env.REDIS_URL = 'redis://localhost:6379'
+const originalRedisUrl = process.env.REDIS_URL
+process.env.REDIS_URL = originalRedisUrl ?? 'redis://localhost:6379'
 
 const { connectRedis, redisClient, wrapRedisError } = await import('@/redis/client.js')
+
+afterAll(() => {
+  if (originalRedisUrl === undefined) {
+    delete process.env.REDIS_URL
+    return
+  }
+
+  process.env.REDIS_URL = originalRedisUrl
+})
 
 test('wrapRedisError adds operation context while preserving the original cause', () => {
   const cause = new Error('connection refused')

@@ -1,7 +1,7 @@
 // AI Generated code <PURPOSE>: verify Redis live-session repository behavior
 import { randomUUID } from 'node:crypto'
 
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
+import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { createClient } from 'redis'
 
 import { createAnswerLockRepository } from '@/redis/answer-lock-repository.js'
@@ -9,7 +9,10 @@ import { createLeaderboardRepository } from '@/redis/leaderboard-repository.js'
 import { createLiveSessionRepository } from '@/redis/live-session-repository.js'
 import type { RedisClient } from '@/redis/client.js'
 
+const requireRedisIntegration = process.env.REDIS_INTEGRATION_REQUIRED === 'true'
 const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379'
+const testRunId = `redis-test-${randomUUID()}`
+const testKeyPattern = `quiz:${testRunId}-*`
 
 let client: RedisClient | null = null
 let redisUnavailableReason: string | null = null
@@ -35,22 +38,24 @@ beforeAll(async () => {
   }
 })
 
-beforeEach(async () => {
-  if (client) {
-    await client.flushDb()
-  }
-})
-
 afterAll(async () => {
   if (client) {
+    const keys = await client.keys(testKeyPattern)
+    if (keys.length > 0) {
+      await client.del(keys)
+    }
     await client.destroy()
   }
 })
 
-const sessionId = () => `session-${randomUUID()}`
+const sessionId = () => `${testRunId}-${randomUUID()}`
 
 const getClientOrSkip = (): RedisClient | null => {
   if (!client) {
+    if (requireRedisIntegration) {
+      throw new Error(`Redis integration test requires reachable REDIS_URL ${redisUrl}: ${redisUnavailableReason}`)
+    }
+
     console.warn(
       `Skipping Redis integration test because Redis is unavailable at ${redisUrl}: ${redisUnavailableReason}`,
     )
