@@ -110,6 +110,8 @@ export type ProtocolErrorCode =
   | 'invalid_host_token'
   | 'invalid_participant_token'
   | 'quiz_session_not_found'
+  | 'connection_state_unavailable'
+  | 'runtime_not_available'
 
 export type ProtocolErrorEvent = {
   type: 'protocol_error'
