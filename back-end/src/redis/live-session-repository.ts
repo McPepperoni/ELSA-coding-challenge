@@ -26,6 +26,13 @@ export type SetActiveQuestionInput = Readonly<{
   endsAt: Date
 }>
 
+export type SetQuestionRevealInput = Readonly<{
+  quizSessionId: string
+  questionId: string
+  questionPosition: number
+  startedAt: Date
+}>
+
 export type ParticipantConnectionInput = Readonly<{
   quizSessionId: string
   participantId: string
@@ -185,6 +192,43 @@ export const createLiveSessionRepository = (client: RedisClient = redisClient) =
       })
     } catch (error) {
       throw wrapRedisError('set active question', error)
+    }
+    },
+
+    async setQuestionReveal(input: SetQuestionRevealInput): Promise<void> {
+    try {
+      required(input.quizSessionId, 'Quiz session id')
+      required(input.questionId, 'Question id')
+
+      if (!Number.isInteger(input.questionPosition) || input.questionPosition < 1) {
+        throw new Error('Question position must be a positive integer')
+      }
+
+      await client.hSet(stateKey(input.quizSessionId), {
+        status: 'question_reveal',
+        currentQuestionId: input.questionId,
+        currentQuestionPosition: String(input.questionPosition),
+        startedAt: input.startedAt.toISOString(),
+        endsAt: '',
+      })
+    } catch (error) {
+      throw wrapRedisError('set question reveal', error)
+    }
+    },
+
+    async finishLiveSession(quizSessionId: string): Promise<void> {
+    try {
+      required(quizSessionId, 'Quiz session id')
+
+      await client.hSet(stateKey(quizSessionId), {
+        status: 'finished',
+        currentQuestionId: '',
+        currentQuestionPosition: '',
+        startedAt: '',
+        endsAt: '',
+      })
+    } catch (error) {
+      throw wrapRedisError('finish live session', error)
     }
     },
 

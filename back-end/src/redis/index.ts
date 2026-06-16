@@ -30,4 +30,5 @@ export {
   type LiveSessionState,
   type ParticipantConnectionInput,
   type SetActiveQuestionInput,
+  type SetQuestionRevealInput,
 } from './live-session-repository.js'
