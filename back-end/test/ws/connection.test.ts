@@ -1,5 +1,5 @@
 // AI Generated code <PURPOSE>: verify WebSocket connection route and lifecycle behavior
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
 
 import type { Participant, QuizSession } from '@/db/schema.js'
@@ -55,6 +55,10 @@ const createSocket = (): SentSocket => ({
 })
 
 const parseSent = (socket: SentSocket, index = 0): ServerEvent => JSON.parse(socket.sent[index] ?? '{}')
+
+const flushAsyncWork = async () => {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
 
 const hostState = {
   type: 'session_state',
@@ -178,6 +182,43 @@ test('valid host route reaches the upgrade factory', async () => {
   expect(await response.text()).toBe('upgraded')
 })
 
+test('missing and invalid participant tokens return HTTP 401 JSON before upgrade', async () => {
+  const { dependencies } = createDependencies()
+  let upgradeCalls = 0
+  const app = createWebSocketRoutes(dependencies, () => {
+    upgradeCalls += 1
+    return () => new Response(null, { status: 101 })
+  })
+
+  const missingResponse = await app.request('/participant')
+  const invalidResponse = await app.request('/participant?token=wrong-token')
+
+  expect(missingResponse.status).toBe(401)
+  expect(await missingResponse.json()).toEqual({
+    error: { code: 'missing_token', message: 'WebSocket token is required.' },
+  })
+  expect(invalidResponse.status).toBe(401)
+  expect(await invalidResponse.json()).toEqual({
+    error: {
+      code: 'invalid_participant_token',
+      message: 'Participant WebSocket token is invalid.',
+    },
+  })
+  expect(upgradeCalls).toBe(0)
+})
+
+test('valid participant route reaches the upgrade factory', async () => {
+  const { dependencies } = createDependencies()
+  const app = createWebSocketRoutes(dependencies, () => {
+    return () => new Response('upgraded', { status: 200 })
+  })
+
+  const response = await app.request('/participant?token=participant-token')
+
+  expect(response.status).toBe(200)
+  expect(await response.text()).toBe('upgraded')
+})
+
 test('default backend app factory exposes WebSocket host route behavior', async () => {
   const app = createDefaultHttpApp()
 
@@ -198,9 +239,46 @@ test('host onOpen sends current host session state', async () => {
     },
   })
 
-  await events.onOpen?.(new Event('open'), socket)
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
 
   expect(parseSent(socket)).toEqual(hostState)
+})
+
+test('host onOpen starts initial-state work without returning a promise', () => {
+  const socket = createSocket()
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => hostState,
+    },
+  })
+
+  const result = events.onOpen?.(new Event('open'), socket)
+
+  expect(result).toBeUndefined()
+})
+
+test('host onOpen presenter failure sends protocol error and closes socket', async () => {
+  const socket = createSocket()
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      async presentHostState() {
+        throw new Error('state unavailable')
+      },
+    },
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
+
+  expect(parseSent(socket)).toEqual({
+    type: 'protocol_error',
+    code: 'connection_state_unavailable',
+    message: 'Connection state is not available.',
+  })
+  expect(socket.closed).toBe(true)
 })
 
 test('participant onOpen records connection and sends participant session state', async () => {
@@ -214,7 +292,8 @@ test('participant onOpen records connection and sends participant session state'
     liveSessions: dependencies.liveSessions,
   })
 
-  await events.onOpen?.(new Event('open'), socket)
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
 
   expect(participantConnections).toHaveLength(1)
   expect(participantConnections[0]).toMatchObject({
@@ -236,11 +315,57 @@ test('participant onClose clears participant connection', async () => {
     liveSessions: dependencies.liveSessions,
   })
 
-  await events.onClose?.(new CloseEvent('close'), socket)
+  events.onClose?.(new CloseEvent('close'), socket)
+  await flushAsyncWork()
 
   expect(clearedParticipantConnections).toEqual([
     { quizSessionId: quizSession.id, participantId: participant.id },
   ])
+})
+
+test('participant onClose starts cleanup without returning a promise', () => {
+  const socket = createSocket()
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions: {
+      recordParticipantConnection: async () => undefined,
+      clearParticipantConnection: async () => undefined,
+    },
+  })
+
+  const result = events.onClose?.(new CloseEvent('close'), socket)
+
+  expect(result).toBeUndefined()
+})
+
+test('participant onClose logs and swallows cleanup failures', async () => {
+  const socket = createSocket()
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions: {
+      recordParticipantConnection: async () => undefined,
+      async clearParticipantConnection() {
+        throw new Error('redis unavailable')
+      },
+    },
+  })
+
+  try {
+    events.onClose?.(new CloseEvent('close'), socket)
+    await flushAsyncWork()
+
+    expect(consoleError).toHaveBeenCalledTimes(1)
+    expect(consoleError.mock.calls[0]?.[0]).toBe('Failed to clear participant WebSocket connection')
+  } finally {
+    consoleError.mockRestore()
+  }
 })
 
 test('ping sends pong', async () => {

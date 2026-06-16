@@ -54,14 +54,16 @@ export type WebSocketRouteDependencies = StatePresenterDependencies &
 export type ConnectionSocket = Pick<WSContext, 'send' | 'close'>
 
 export type ConnectionEvents = Readonly<{
-  onOpen?: (event: Event, socket: ConnectionSocket) => void | Promise<void>
-  onMessage?: (event: MessageEvent, socket: ConnectionSocket) => void | Promise<void>
-  onClose?: (event: CloseEvent, socket: ConnectionSocket) => void | Promise<void>
+  onOpen?: (event: Event, socket: ConnectionSocket) => void
+  onMessage?: (event: MessageEvent, socket: ConnectionSocket) => void
+  onClose?: (event: CloseEvent, socket: ConnectionSocket) => void
 }>
 
 export type WebSocketUpgrade = (
   createEvents: (c: Context) => ConnectionEvents,
 ) => Handler
+
+const defaultUpgradeWebSocket: WebSocketUpgrade = (createEvents) => upgradeWebSocket(createEvents)
 
 export type HostConnectionEventsInput = Readonly<{
   connection: HostSocketConnection
@@ -86,7 +88,7 @@ export type ParticipantConnectionEventsInput = Readonly<{
 
 export const createWebSocketRoutes = (
   dependencies: WebSocketRouteDependencies,
-  upgrade: WebSocketUpgrade = upgradeWebSocket as WebSocketUpgrade,
+  upgrade: WebSocketUpgrade = defaultUpgradeWebSocket,
 ): Hono => {
   const app = new Hono()
 
@@ -103,7 +105,7 @@ export const createWebSocketRoutes = (
         connection: result.connection,
         presenter,
       }),
-    ) as Handler
+    )
 
     return handler(c, async () => undefined)
   })
@@ -122,7 +124,7 @@ export const createWebSocketRoutes = (
         presenter,
         liveSessions: dependencies.liveSessions,
       }),
-    ) as Handler
+    )
 
     return handler(c, async () => undefined)
   })
@@ -145,8 +147,8 @@ export const createHostConnectionEvents = ({
   connection,
   presenter,
 }: HostConnectionEventsInput): ConnectionEvents => ({
-  async onOpen(_event, socket) {
-    await sendInitialState(socket, () => presenter.presentHostState(connection.quizSession))
+  onOpen(_event, socket) {
+    void sendInitialState(socket, () => presenter.presentHostState(connection.quizSession))
   },
 
   onMessage(event, socket) {
@@ -159,8 +161,8 @@ export const createParticipantConnectionEvents = ({
   presenter,
   liveSessions,
 }: ParticipantConnectionEventsInput): ConnectionEvents => ({
-  async onOpen(_event, socket) {
-    await sendInitialState(socket, async () => {
+  onOpen(_event, socket) {
+    void sendInitialState(socket, async () => {
       await liveSessions.recordParticipantConnection({
         quizSessionId: connection.quizSession.id,
         participantId: connection.participant.id,
@@ -175,11 +177,15 @@ export const createParticipantConnectionEvents = ({
     handleClientMessage('participant', event.data, socket)
   },
 
-  async onClose() {
-    await liveSessions.clearParticipantConnection({
-      quizSessionId: connection.quizSession.id,
-      participantId: connection.participant.id,
-    })
+  onClose() {
+    void liveSessions
+      .clearParticipantConnection({
+        quizSessionId: connection.quizSession.id,
+        participantId: connection.participant.id,
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to clear participant WebSocket connection', error)
+      })
   },
 })
 
