@@ -11,6 +11,7 @@ export {
   createAnswerLockRepository,
   type AcceptFirstAnswerInput,
   type AcceptFirstAnswerResult,
+  type HasParticipantAnsweredInput,
   type QuestionAnswerInput,
 } from './answer-lock-repository.js'
 export {
