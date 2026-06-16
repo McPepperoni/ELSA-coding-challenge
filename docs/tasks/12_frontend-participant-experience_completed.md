@@ -1,6 +1,6 @@
 # Frontend Participant Experience
 
-Status: pending
+Status: completed
 Priority: 12
 
 ## Goal

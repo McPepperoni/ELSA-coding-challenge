@@ -1,6 +1,6 @@
 # Frontend Foundation
 
-Status: pending
+Status: completed
 Priority: 10
 
 ## Goal

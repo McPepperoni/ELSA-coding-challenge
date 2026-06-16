@@ -132,7 +132,11 @@ export const createParticipantStatePresenter = (dependencies: StatePresenterDepe
     if (resolved.status === 'finished') {
       return {
         ...base,
-        leaderboard: await readLeaderboard(dependencies, quizSession.id),
+        leaderboard: await readParticipantLeaderboard(
+          dependencies,
+          quizSession.id,
+          participant.id,
+        ),
       }
     }
 
@@ -265,6 +269,18 @@ const readLeaderboard = async (
   const entries = await dependencies.leaderboard?.readLeaderboard?.(quizSessionId)
 
   return entries?.map(toLeaderboardEntry)
+}
+
+const readParticipantLeaderboard = async (
+  dependencies: StatePresenterDependencies,
+  quizSessionId: string,
+  participantId: string,
+): Promise<SessionStateLeaderboardEntry[] | undefined> => {
+  const entries = await dependencies.leaderboard?.readLeaderboard?.(quizSessionId)
+
+  return entries
+    ?.filter((entry) => entry.participantId === participantId)
+    .map(toLeaderboardEntry)
 }
 
 const toLeaderboardEntry = (entry: LiveLeaderboardEntry): SessionStateLeaderboardEntry => ({

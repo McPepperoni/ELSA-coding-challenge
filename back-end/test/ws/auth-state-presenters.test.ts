@@ -350,7 +350,6 @@ test('presents participant finished reconnect state with leaderboard and no ques
     currentQuestionPosition: null,
     leaderboard: [
       { participantId: participant.id, rank: 1, score: 1000 },
-      { participantId: secondParticipant.id, rank: 2, score: 500 },
     ],
   })
   expect(event).not.toHaveProperty('question')
@@ -360,6 +359,8 @@ test('presents participant finished reconnect state with leaderboard and no ques
   expect(payload).not.toContain('Who wrote the first computer program?')
   expect(payload).not.toContain('Ada Lovelace')
   expect(payload).not.toContain('Grace Hopper')
+  expect(payload).not.toContain(secondParticipant.id)
+  expect(payload).not.toContain(secondParticipant.displayName)
   expect(payload).not.toContain('isCorrect')
   expect(payload).not.toContain('correctOptionId')
 })

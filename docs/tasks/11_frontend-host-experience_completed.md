@@ -1,6 +1,6 @@
 # Frontend Host Experience
 
-Status: pending
+Status: completed
 Priority: 11
 
 ## Goal

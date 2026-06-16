@@ -824,9 +824,11 @@ test('full runtime flow broadcasts waiting room, two questions, reveal leaderboa
     status: 'finished',
     leaderboard: [
       { participantId: participant.id, rank: 1, score: 100 },
-      { participantId: otherParticipant.id, rank: 2, score: 100 },
     ],
   })
+  expect(JSON.stringify(latestParticipantState(participant.id))).not.toContain(
+    otherParticipant.displayName,
+  )
 })
 
 test('host start begins first question with question-specific timer and secret participant payloads', async () => {
