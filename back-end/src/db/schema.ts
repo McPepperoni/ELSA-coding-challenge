@@ -49,15 +49,12 @@ export const questions = pgTable(
       .notNull()
       .references(() => questionSets.id, { onDelete: 'cascade' }),
     prompt: text('prompt').notNull(),
-    position: integer('position').notNull(),
     timeLimitSeconds: integer('time_limit_seconds'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    uniqueIndex('questions_question_set_position_idx').on(table.questionSetId, table.position),
     index('questions_question_set_id_idx').on(table.questionSetId),
     check('questions_prompt_not_blank', sql`length(trim(${table.prompt})) > 0`),
-    check('questions_position_positive', sql`${table.position} > 0`),
     check(
       'questions_time_limit_range',
       sql`${table.timeLimitSeconds} is null or ${table.timeLimitSeconds} between 5 and 300`,
@@ -98,6 +95,7 @@ export const quizSessions = pgTable(
     quizCode: text('quiz_code').notNull(),
     status: quizSessionStatusEnum('status').notNull().default('waiting_room'),
     currentQuestionPosition: integer('current_question_position'),
+    questionOrderIds: uuid('question_order_ids').array().notNull(),
     hostTokenHash: text('host_token_hash').notNull(),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
@@ -114,6 +112,10 @@ export const quizSessions = pgTable(
     check(
       'quiz_sessions_current_question_position_positive',
       sql`${table.currentQuestionPosition} is null or ${table.currentQuestionPosition} > 0`,
+    ),
+    check(
+      'quiz_sessions_question_order_ids_non_empty',
+      sql`cardinality(${table.questionOrderIds}) > 0`,
     ),
   ],
 )

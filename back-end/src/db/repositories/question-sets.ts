@@ -116,14 +116,13 @@ export const questionSetsRepository = {
       const insertedQuestions: Question[] = []
       const insertedOptions: AnswerOption[] = []
 
-      for (const [questionIndex, questionInput] of input.questions.entries()) {
+      for (const questionInput of input.questions) {
         const insertedQuestion = requireInserted(
           await tx
             .insert(questions)
             .values({
               questionSetId: insertedQuestionSet.id,
               prompt: questionInput.prompt.trim(),
-              position: questionIndex + 1,
               timeLimitSeconds: questionInput.timeLimitSeconds ?? null,
             })
             .returning(),
@@ -168,7 +167,7 @@ export const questionSetsRepository = {
         .select()
         .from(questions)
         .where(eq(questions.questionSetId, id))
-        .orderBy(asc(questions.position))
+        .orderBy(asc(questions.createdAt), asc(questions.id))
 
       if (questionRows.length === 0) {
         return composeFullQuestionSet(questionSet, [], [])

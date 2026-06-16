@@ -18,7 +18,7 @@ Implement the live quiz runtime over WebSockets: waiting room, quiz start, activ
 
 ## Context
 
-The server owns quiz state and timers. Clients display the state received from the server. During an active question, participants submit one answer. The server rejects late, duplicate, invalid, or wrong-state answers. When the server timer expires, the quiz transitions to reveal, the host sees the correct answer and top three participants, and participants wait for the next question.
+The server owns quiz state and timers. Clients display the state received from the server. During an active question, participants submit one answer. The server rejects late, duplicate, invalid, or wrong-state answers. Runtime resolves the active question by indexing into the session's stored `questionOrderIds`. When the server timer expires, the quiz transitions to reveal, the host sees the correct answer and top three participants, and participants wait for the next question.
 
 ## Dependencies
 
@@ -39,7 +39,7 @@ The server owns quiz state and timers. Clients display the state received from t
 - Update answered count and live score.
 - End question when server timer expires.
 - Broadcast reveal state and top three leaderboard to host.
-- Move to next question by host action or finish when no questions remain.
+- Move to the next question ID in the stored session order by host action, or finish when no question IDs remain.
 
 ## Out Of Scope
 
@@ -64,7 +64,7 @@ The server owns quiz state and timers. Clients display the state received from t
 - Host receives answered count updates.
 - Host receives correct answer and top three after timer ends.
 - Participant remains in waiting/submitted states between questions.
-- Final state is reached after the last question.
+- Final state is reached after the last question ID in `questionOrderIds`.
 
 ## Verification
 

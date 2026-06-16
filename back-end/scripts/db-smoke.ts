@@ -46,10 +46,11 @@ const runSmoke = async (): Promise<void> => {
       participantTokenHash: `participant-smoke-${suffix}`,
     })
 
-    const question = questionSet.questions[0]
+    const activeQuestionId = session.questionOrderIds[0]
+    const question = questionSet.questions.find((candidate) => candidate.id === activeQuestionId)
     const correctOption = question?.options.find((option) => option.isCorrect)
 
-    if (!question || !correctOption) {
+    if (!activeQuestionId || !question || !correctOption) {
       throw new Error('Smoke question did not include a correct option')
     }
 
@@ -88,6 +89,7 @@ const runSmoke = async (): Promise<void> => {
           ok: true,
           questionSetId: questionSet.id,
           quizSessionId: session.id,
+          questionOrderIds: session.questionOrderIds,
           participantId: participant.id,
           leaderboardRows: leaderboard.length,
         },
