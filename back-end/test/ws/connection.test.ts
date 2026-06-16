@@ -1065,6 +1065,42 @@ test('rejected host runtime handler sends generic runtime error', async () => {
   }
 })
 
+test('synchronous host runtime handler throw sends generic runtime error', async () => {
+  const socket = createSocket()
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => hostState,
+    },
+    runtimeHandlers: {
+      handleHostEvent() {
+        throw new Error('boom')
+      },
+      handleParticipantEvent() {
+        return undefined
+      },
+    },
+  })
+
+  try {
+    expect(() =>
+      events.onMessage?.(new MessageEvent('message', { data: '{"type":"start_quiz"}' }), socket),
+    ).not.toThrow()
+    await flushAsyncWork()
+
+    expect(parseSent(socket)).toEqual({
+      type: 'runtime_error',
+      code: 'command_failed',
+      message: 'Runtime command failed.',
+    })
+    expect(consoleError).toHaveBeenCalledTimes(1)
+    expect(consoleError.mock.calls[0]?.[0]).toBe('Runtime event handler failed')
+  } finally {
+    consoleError.mockRestore()
+  }
+})
+
 test('rejected host runtime handler does not leak when runtime error send fails', async () => {
   const socket = {
     sent: [] as string[],
@@ -1094,6 +1130,38 @@ test('rejected host runtime handler does not leak when runtime error send fails'
 
   try {
     events.onMessage?.(new MessageEvent('message', { data: '{"type":"start_quiz"}' }), socket)
+    await flushAsyncWork()
+
+    expect(consoleError).toHaveBeenCalledWith('Runtime event handler failed')
+    expect(consoleError).toHaveBeenCalledWith('Failed to send runtime error response')
+  } finally {
+    consoleError.mockRestore()
+  }
+})
+
+test('default runtime handler send failure does not throw from onMessage', async () => {
+  const socket = {
+    sent: [] as string[],
+    closed: false,
+    send() {
+      throw new Error('socket unavailable')
+    },
+    close() {
+      this.closed = true
+    },
+  }
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => hostState,
+    },
+  })
+
+  try {
+    expect(() =>
+      events.onMessage?.(new MessageEvent('message', { data: '{"type":"start_quiz"}' }), socket),
+    ).not.toThrow()
     await flushAsyncWork()
 
     expect(consoleError).toHaveBeenCalledWith('Runtime event handler failed')

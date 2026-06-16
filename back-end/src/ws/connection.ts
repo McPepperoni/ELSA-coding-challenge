@@ -442,7 +442,9 @@ const handleRuntimeEvent = (
   handleEvent: () => void | Promise<void>,
   socket: ConnectionSocket,
 ): void => {
-  void Promise.resolve(handleEvent()).catch(() => {
+  void (async () => {
+    await handleEvent()
+  })().catch(() => {
     console.error('Runtime event handler failed')
     if (
       !trySendEvent(socket, {
