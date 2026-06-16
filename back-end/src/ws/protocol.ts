@@ -13,8 +13,20 @@ export type ParsedClientEvent<Role extends SocketRole> =
   | { ok: true; event: ClientEventByRole[Role] }
   | { ok: false; event: ProtocolErrorEvent }
 
-const hostEventTypes = new Set(['start_quiz', 'next_question', 'finish_quiz', 'ping'])
-const participantEventTypes = new Set(['submit_answer', 'ping'])
+const hostEventTypeValues = [
+  'start_quiz',
+  'next_question',
+  'finish_quiz',
+  'ping',
+] as const satisfies readonly HostClientEvent['type'][]
+
+const participantEventTypeValues = [
+  'submit_answer',
+  'ping',
+] as const satisfies readonly ParticipantClientEvent['type'][]
+
+const hostEventTypes = new Set<HostClientEvent['type']>(hostEventTypeValues)
+const participantEventTypes = new Set<ParticipantClientEvent['type']>(participantEventTypeValues)
 
 export const parseClientEvent = <Role extends SocketRole>(
   role: Role,
@@ -48,12 +60,7 @@ export const parseClientEvent = <Role extends SocketRole>(
 export const serializeServerEvent = (event: ServerEvent): string => JSON.stringify(event)
 
 const parseHostEvent = (value: Record<string, unknown>): HostClientEvent | null => {
-  if (
-    value.type === 'start_quiz' ||
-    value.type === 'next_question' ||
-    value.type === 'finish_quiz' ||
-    value.type === 'ping'
-  ) {
+  if (typeof value.type === 'string' && isHostEventType(value.type)) {
     return { type: value.type }
   }
 
@@ -61,11 +68,19 @@ const parseHostEvent = (value: Record<string, unknown>): HostClientEvent | null 
 }
 
 const parseParticipantEvent = (value: Record<string, unknown>): ParticipantClientEvent | null => {
+  if (typeof value.type !== 'string' || !isParticipantEventType(value.type)) {
+    return null
+  }
+
   if (value.type === 'ping') {
     return { type: 'ping' }
   }
 
-  if (value.type === 'submit_answer' && typeof value.selectedOptionId === 'string') {
+  if (
+    value.type === 'submit_answer' &&
+    typeof value.selectedOptionId === 'string' &&
+    value.selectedOptionId.trim().length > 0
+  ) {
     return { type: 'submit_answer', selectedOptionId: value.selectedOptionId }
   }
 
@@ -73,7 +88,17 @@ const parseParticipantEvent = (value: Record<string, unknown>): ParticipantClien
 }
 
 const isAllowedForRole = (role: SocketRole, eventType: string): boolean => {
-  return role === 'host' ? hostEventTypes.has(eventType) : participantEventTypes.has(eventType)
+  return role === 'host' ? isHostEventType(eventType) : isParticipantEventType(eventType)
+}
+
+const isHostEventType = (eventType: string): eventType is HostClientEvent['type'] => {
+  return hostEventTypes.has(eventType as HostClientEvent['type'])
+}
+
+const isParticipantEventType = (
+  eventType: string,
+): eventType is ParticipantClientEvent['type'] => {
+  return participantEventTypes.has(eventType as ParticipantClientEvent['type'])
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {

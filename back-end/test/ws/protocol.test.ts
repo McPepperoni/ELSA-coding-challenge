@@ -23,10 +23,33 @@ test('parses valid host control events', () => {
   })
 })
 
+test('parses ping events for host and participant sockets', () => {
+  expect(parseClientEvent('host', '{"type":"ping"}')).toEqual({
+    ok: true,
+    event: { type: 'ping' },
+  })
+
+  expect(parseClientEvent('participant', '{"type":"ping"}')).toEqual({
+    ok: true,
+    event: { type: 'ping' },
+  })
+})
+
 test('parses valid participant answer submission', () => {
   expect(parseClientEvent('participant', '{"type":"submit_answer","selectedOptionId":"option-1"}')).toEqual({
     ok: true,
     event: { type: 'submit_answer', selectedOptionId: 'option-1' },
+  })
+})
+
+test('rejects participant-only event types from host sockets', () => {
+  expect(parseClientEvent('host', '{"type":"submit_answer","selectedOptionId":"option-1"}')).toEqual({
+    ok: false,
+    event: {
+      type: 'protocol_error',
+      code: 'forbidden_event_type',
+      message: 'Event type is not allowed for this socket role.',
+    },
   })
 })
 
@@ -41,6 +64,21 @@ test('rejects invalid JSON with protocol error event', () => {
   })
 })
 
+test('rejects non-object and array JSON payloads', () => {
+  const expected = {
+    ok: false,
+    event: {
+      type: 'protocol_error',
+      code: 'invalid_event_shape',
+      message: 'Message shape is not supported.',
+    },
+  } as const
+
+  expect(parseClientEvent('host', 'null')).toEqual(expected)
+  expect(parseClientEvent('host', '"ping"')).toEqual(expected)
+  expect(parseClientEvent('host', '["ping"]')).toEqual(expected)
+})
+
 test('rejects host-only event types from participant sockets', () => {
   expect(parseClientEvent('participant', '{"type":"start_quiz"}')).toEqual({
     ok: false,
@@ -50,6 +88,22 @@ test('rejects host-only event types from participant sockets', () => {
       message: 'Event type is not allowed for this socket role.',
     },
   })
+})
+
+test('rejects invalid participant answer submission shapes', () => {
+  const expected = {
+    ok: false,
+    event: {
+      type: 'protocol_error',
+      code: 'invalid_event_shape',
+      message: 'Message shape is not supported.',
+    },
+  } as const
+
+  expect(parseClientEvent('participant', '{"type":"submit_answer"}')).toEqual(expected)
+  expect(parseClientEvent('participant', '{"type":"submit_answer","selectedOptionId":123}')).toEqual(expected)
+  expect(parseClientEvent('participant', '{"type":"submit_answer","selectedOptionId":""}')).toEqual(expected)
+  expect(parseClientEvent('participant', '{"type":"submit_answer","selectedOptionId":"   "}')).toEqual(expected)
 })
 
 test('serializes protocol error server events', () => {
