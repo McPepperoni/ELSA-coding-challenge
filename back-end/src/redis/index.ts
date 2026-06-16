@@ -13,6 +13,7 @@ export {
   type AcceptFirstAnswerResult,
   type HasParticipantAnsweredInput,
   type QuestionAnswerInput,
+  type ReleaseAnswerInput,
 } from './answer-lock-repository.js'
 export {
   createLeaderboardRepository,

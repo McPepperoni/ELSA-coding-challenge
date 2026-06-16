@@ -160,6 +160,8 @@ const createDependencies = (
     deferActiveQuestion?: boolean
     activeQuestionRejects?: boolean
     deferScore?: boolean
+    scoreRejects?: boolean
+    leaderboardRejects?: boolean
     clockNow?: Date
     participants?: Participant[]
     useRecordedLeaderboard?: boolean
@@ -169,6 +171,8 @@ const createDependencies = (
   const scoreDeferred = createDeferred()
   let currentTime = options.clockNow ?? later
   let sessionParticipants = [...(options.participants ?? [participant, otherParticipant])]
+  let shouldRejectScore = options.scoreRejects ?? false
+  let shouldRejectLeaderboard = options.leaderboardRejects ?? false
   let durableSession: QuizSession = { ...quizSession }
   let liveSession: LiveSessionState | null = {
     quizSessionId: quizSession.id,
@@ -215,6 +219,7 @@ const createDependencies = (
   }> = []
   const operations: string[] = []
   const persistenceEvents: PersistenceEvent[] = []
+  const releasedAnswers: Array<{ quizSessionId: string; questionId: string; participantId: string }> = []
   const scheduledTimers: ScheduleQuestionTimerInput[] = []
   const cancelledTimers: string[] = []
   const hostEvents: ServerEvent[] = []
@@ -362,6 +367,10 @@ const createDependencies = (
       readAnsweredCount: async (input) => answeredParticipantsForQuestion(input.questionId).size,
       hasParticipantAnswered: async (input) =>
         hasAnsweredOverride ?? answeredParticipantsForQuestion(input.questionId).has(input.participantId),
+      async releaseAnswer(input) {
+        releasedAnswers.push(input)
+        answeredParticipantsForQuestion(input.questionId).delete(input.participantId)
+      },
       async resetQuestionAnswers(input) {
         resetLocks.push(input)
         hasAnsweredOverride = null
@@ -373,6 +382,9 @@ const createDependencies = (
         scoreAttempts.push(input)
         if (options.deferScore) {
           await scoreDeferred.promise
+        }
+        if (shouldRejectScore) {
+          throw new Error('score unavailable')
         }
         operations.push('score')
         scoredAnswers.push(input)
@@ -402,6 +414,9 @@ const createDependencies = (
       },
       async readLeaderboard() {
         operations.push('readLeaderboard')
+        if (shouldRejectLeaderboard) {
+          throw new Error('leaderboard unavailable')
+        }
         if (options.useRecordedLeaderboard) {
           return readRecordedLeaderboard()
         }
@@ -454,6 +469,12 @@ const createDependencies = (
     setAcceptedLock: (value: boolean) => {
       acceptedLock = value
     },
+    setScoreRejects: (value: boolean) => {
+      shouldRejectScore = value
+    },
+    setLeaderboardRejects: (value: boolean) => {
+      shouldRejectLeaderboard = value
+    },
     releaseActiveQuestion: () => {
       activeQuestionDeferred.resolve()
     },
@@ -467,6 +488,7 @@ const createDependencies = (
     operations,
     participantEvents,
     persistenceEvents,
+    releasedAnswers,
     resetLocks,
     reveals,
     scheduledTimers,
@@ -900,6 +922,48 @@ test('accepted answer sends result, scores, persists, and broadcasts answered co
   })
 })
 
+test('answer score failure releases the answer lock so the participant can retry', async () => {
+  const deps = createDependencies({ scoreRejects: true })
+  const firstSocket = createSocket()
+  const secondSocket = createSocket()
+  deps.setDurableSession({ ...quizSession, status: 'question_active', currentQuestionPosition: 1 })
+  deps.setLiveSession(activeLiveState())
+  let thrown: unknown
+
+  try {
+    await deps.runtime.handleParticipantEvent({
+      connection: { role: 'participant', participant, quizSession },
+      event: { type: 'submit_answer', selectedOptionId: 'option-1' },
+      socket: firstSocket,
+    })
+  } catch (error) {
+    thrown = error
+  }
+
+  expect(thrown).toBeInstanceOf(Error)
+  expect((thrown as Error).message).toBe('score unavailable')
+  expect(firstSocket.sent).toEqual([])
+  expect(deps.releasedAnswers).toEqual([
+    { quizSessionId: quizSession.id, questionId: 'question-1', participantId: participant.id },
+  ])
+  expect(deps.scoredAnswers).toEqual([])
+  expect(deps.persistenceEvents).toEqual([])
+
+  deps.setScoreRejects(false)
+  await deps.runtime.handleParticipantEvent({
+    connection: { role: 'participant', participant, quizSession },
+    event: { type: 'submit_answer', selectedOptionId: 'option-1' },
+    socket: secondSocket,
+  })
+
+  expect(parseSent(secondSocket)).toEqual({
+    type: 'answer_result',
+    status: 'accepted',
+    selectedOptionId: 'option-1',
+  })
+  expect(deps.scoredAnswers).toHaveLength(1)
+})
+
 test('duplicate late invalid and wrong-state answer rejections do not score', async () => {
   const cases = [
     {
@@ -1067,6 +1131,47 @@ test('finish command cancels timer and enqueues final leaderboard', async () => 
     type: 'final_leaderboard',
     quizSessionId: quizSession.id,
     recordedAt: later,
+  })
+})
+
+test('finish remains retryable when final leaderboard read fails', async () => {
+  const deps = createDependencies({ leaderboardRejects: true })
+  const firstSocket = createSocket()
+  const secondSocket = createSocket()
+  deps.setDurableSession({ ...quizSession, status: 'question_active', currentQuestionPosition: 1 })
+  deps.setLiveSession(activeLiveState())
+  let thrown: unknown
+
+  try {
+    await deps.runtime.handleHostEvent({
+      connection: { role: 'host', quizSession },
+      event: { type: 'finish_quiz' },
+      socket: firstSocket,
+    })
+  } catch (error) {
+    thrown = error
+  }
+
+  expect(thrown).toBeInstanceOf(Error)
+  expect((thrown as Error).message).toBe('leaderboard unavailable')
+  expect(deps.updates).toEqual([])
+  expect(deps.finishedLiveSessions).toEqual([])
+  expect(deps.cancelledTimers).toEqual([])
+  expect(deps.persistenceEvents).toEqual([])
+  expect(deps.hostEvents).toEqual([])
+
+  deps.setLeaderboardRejects(false)
+  await deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'finish_quiz' },
+    socket: secondSocket,
+  })
+
+  expect(deps.finishedLiveSessions).toEqual([quizSession.id])
+  expect(deps.hostEvents.at(-1)).toMatchObject({
+    type: 'session_state',
+    view: 'host',
+    status: 'finished',
   })
 })
 

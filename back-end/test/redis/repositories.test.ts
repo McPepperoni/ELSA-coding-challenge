@@ -260,6 +260,19 @@ test('accepts only the first answer lock for a participant question pair', async
     }),
   ).toBe(2)
 
+  await answerLocks.releaseAnswer(input)
+  expect(await answerLocks.hasParticipantAnswered(input)).toBe(false)
+  expect(
+    await answerLocks.readAnsweredCount({
+      quizSessionId,
+      questionId: 'question-1',
+    }),
+  ).toBe(1)
+  expect(await answerLocks.acceptFirstAnswer(input)).toEqual({
+    accepted: true,
+    answeredCount: 2,
+  })
+
   await answerLocks.resetQuestionAnswers({
     quizSessionId,
     questionId: 'question-1',

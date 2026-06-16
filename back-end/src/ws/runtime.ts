@@ -76,6 +76,11 @@ type AnswerLocksRuntimeRepository = StatePresenterDependencies['answerLocks'] &
       questionId: string
       participantId: string
     }): Promise<{ accepted: boolean; answeredCount: number }>
+    releaseAnswer(input: {
+      quizSessionId: string
+      questionId: string
+      participantId: string
+    }): Promise<void>
     resetQuestionAnswers(input: {
       quizSessionId: string
       questionId: string
@@ -400,6 +405,7 @@ export const createLiveQuizRuntime = (
     }
 
     const finishedAt = clock.now()
+    const leaderboard = await dependencies.leaderboard.readLeaderboard(quizSession.id)
     const updatedSession = await updateQuizSession(socket, quizSession, {
       status: 'finished',
       currentQuestionPosition: null,
@@ -417,7 +423,6 @@ export const createLiveQuizRuntime = (
     }
 
     timers.cancelQuestionTimer(quizSession.id)
-    const leaderboard = await dependencies.leaderboard.readLeaderboard(quizSession.id)
     enqueuePersistenceEvent({
       type: 'final_leaderboard',
       quizSessionId: quizSession.id,
@@ -557,15 +562,24 @@ export const createLiveQuizRuntime = (
     const scoreAwarded = calculateAcceptedAnswerScore({
       isCorrect: validation.value.isCorrect,
     })
-    await dependencies.leaderboard.recordAnswerScore({
-      quizSessionId: quizSession.id,
-      participantId: participant.id,
-      displayName: participant.displayName,
-      joinedAt: participant.joinedAt,
-      isCorrect: validation.value.isCorrect,
-      scoreAwarded,
-      submittedAt,
-    })
+    try {
+      await dependencies.leaderboard.recordAnswerScore({
+        quizSessionId: quizSession.id,
+        participantId: participant.id,
+        displayName: participant.displayName,
+        joinedAt: participant.joinedAt,
+        isCorrect: validation.value.isCorrect,
+        scoreAwarded,
+        submittedAt,
+      })
+    } catch (error) {
+      await rollbackAnswerLock({
+        quizSessionId: quizSession.id,
+        questionId: question?.id ?? '',
+        participantId: participant.id,
+      })
+      throw error
+    }
     enqueuePersistenceEvent({
       type: 'accepted_answer',
       quizSessionId: quizSession.id,
@@ -662,6 +676,18 @@ export const createLiveQuizRuntime = (
       })
     } catch (error) {
       console.error('Failed to roll back quiz session runtime state', error)
+    }
+  }
+
+  const rollbackAnswerLock = async (input: Readonly<{
+    quizSessionId: string
+    questionId: string
+    participantId: string
+  }>): Promise<void> => {
+    try {
+      await dependencies.answerLocks.releaseAnswer(input)
+    } catch (error) {
+      console.error('Failed to roll back accepted answer lock', error)
     }
   }
 
