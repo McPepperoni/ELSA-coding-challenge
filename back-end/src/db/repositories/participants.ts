@@ -55,4 +55,8 @@ export const participantsRepository = {
       .where(eq(participants.quizSessionId, quizSessionId))
       .orderBy(asc(participants.joinedAt), asc(participants.id))
   },
+
+  async deleteParticipant(id: string): Promise<void> {
+    await db.delete(participants).where(eq(participants.id, id))
+  },
 }

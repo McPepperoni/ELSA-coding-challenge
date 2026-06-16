@@ -1,6 +1,6 @@
 # Backend REST API
 
-Status: pending
+Status: completed
 Priority: 06
 
 ## Goal

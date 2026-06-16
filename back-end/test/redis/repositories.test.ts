@@ -5,9 +5,9 @@ import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { createClient } from 'redis'
 
 import { createAnswerLockRepository } from '@/redis/answer-lock-repository.js'
+import type { RedisClient } from '@/redis/client.js'
 import { createLeaderboardRepository } from '@/redis/leaderboard-repository.js'
 import { createLiveSessionRepository } from '@/redis/live-session-repository.js'
-import type { RedisClient } from '@/redis/client.js'
 
 const requireRedisIntegration = process.env.REDIS_INTEGRATION_REQUIRED === 'true'
 const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379'
@@ -33,7 +33,7 @@ beforeAll(async () => {
   } catch (error) {
     redisUnavailableReason = error instanceof Error ? error.message : String(error)
     if (redis.isOpen) {
-      await redis.destroy()
+      redis.destroy()
     }
   }
 })
@@ -44,7 +44,7 @@ afterAll(async () => {
     if (keys.length > 0) {
       await client.del(keys)
     }
-    await client.destroy()
+    client.destroy()
   }
 })
 
