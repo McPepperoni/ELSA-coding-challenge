@@ -1,2 +1,2 @@
-// AI Generated code track backend type boundary
-export {}
+// AI Generated code <PURPOSE>: expose backend shared type contracts
+export * from './events.js'
