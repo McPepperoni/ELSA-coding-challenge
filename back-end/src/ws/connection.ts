@@ -57,6 +57,7 @@ export type WebSocketRouteDependencies = StatePresenterDependencies &
         clearParticipantConnection: (input: ClearParticipantConnectionInput) => Promise<void>
       }>
     socketHub?: SocketHub
+    runtimeHandlers?: RuntimeHandlers
   }>
 
 export type ConnectionSocket = Pick<WSContext, 'send' | 'close'>
@@ -130,6 +131,7 @@ export const createWebSocketRoutes = (
         connection: result.connection,
         presenter,
         hub: dependencies.socketHub ?? defaultSocketHub,
+        runtimeHandlers: dependencies.runtimeHandlers ?? defaultRuntimeHandlers,
       }),
     )
 
@@ -150,6 +152,7 @@ export const createWebSocketRoutes = (
         presenter,
         liveSessions: dependencies.liveSessions,
         hub: dependencies.socketHub ?? defaultSocketHub,
+        runtimeHandlers: dependencies.runtimeHandlers ?? defaultRuntimeHandlers,
       }),
     )
 
@@ -219,23 +222,20 @@ export const createParticipantConnectionEvents = ({
 
   return {
     onOpen(_event, socket) {
-      void sendInitialState(socket, async () => {
-        await liveSessions.recordParticipantConnection({
-          quizSessionId: connection.quizSession.id,
-          participantId: connection.participant.id,
-          connectionId,
-          connectedAt: new Date(),
-        })
-
-        return presenter.presentParticipantState(connection.participant, connection.quizSession)
-      }).then((didSendInitialState) => {
-        if (didSendInitialState && !isClosed) {
+      void openParticipantConnection({
+        connection,
+        connectionId,
+        presenter,
+        liveSessions,
+        socket,
+        shouldSkipRegistration: () => isClosed,
+        registerSocket: () => {
           unregisterSocket = hub.registerParticipantSocket({
             quizSessionId: connection.quizSession.id,
             participantId: connection.participant.id,
             socket,
           })
-        }
+        },
       })
     },
 
@@ -253,9 +253,7 @@ export const createParticipantConnectionEvents = ({
           participantId: connection.participant.id,
           connectionId,
         })
-        .catch((error: unknown) => {
-          console.error('Failed to clear participant WebSocket connection', error)
-        })
+        .catch(logParticipantCleanupFailure)
     },
   }
 }
@@ -296,11 +294,15 @@ const handleHostClientMessage = (
     return
   }
 
-  void runtimeHandlers.handleHostEvent({
-    connection,
-    event: result.event,
+  handleRuntimeEvent(
+    () =>
+      runtimeHandlers.handleHostEvent({
+        connection,
+        event: result.event as Exclude<HostClientEvent, { type: 'ping' }>,
+        socket,
+      }),
     socket,
-  })
+  )
 }
 
 const handleParticipantClientMessage = (
@@ -330,11 +332,79 @@ const handleParticipantClientMessage = (
     return
   }
 
-  void runtimeHandlers.handleParticipantEvent({
-    connection,
-    event: result.event,
+  handleRuntimeEvent(
+    () =>
+      runtimeHandlers.handleParticipantEvent({
+        connection,
+        event: result.event as Exclude<ParticipantClientEvent, { type: 'ping' }>,
+        socket,
+      }),
     socket,
-  })
+  )
+}
+
+const openParticipantConnection = async ({
+  connection,
+  connectionId,
+  presenter,
+  liveSessions,
+  socket,
+  shouldSkipRegistration,
+  registerSocket,
+}: Readonly<{
+  connection: ParticipantSocketConnection
+  connectionId: string
+  presenter: ParticipantConnectionEventsInput['presenter']
+  liveSessions: ParticipantConnectionEventsInput['liveSessions']
+  socket: ConnectionSocket
+  shouldSkipRegistration: () => boolean
+  registerSocket: () => void
+}>): Promise<void> => {
+  const participantConnection = {
+    quizSessionId: connection.quizSession.id,
+    participantId: connection.participant.id,
+    connectionId,
+  }
+
+  if (shouldSkipRegistration()) {
+    return
+  }
+
+  try {
+    await liveSessions.recordParticipantConnection({
+      ...participantConnection,
+      connectedAt: new Date(),
+    })
+  } catch {
+    if (!shouldSkipRegistration()) {
+      sendConnectionStateUnavailable(socket)
+    }
+    return
+  }
+
+  if (shouldSkipRegistration()) {
+    await liveSessions.clearParticipantConnection(participantConnection).catch(logParticipantCleanupFailure)
+    return
+  }
+
+  let event: ServerEvent
+
+  try {
+    event = await presenter.presentParticipantState(connection.participant, connection.quizSession)
+  } catch {
+    if (!shouldSkipRegistration()) {
+      sendConnectionStateUnavailable(socket)
+    }
+    return
+  }
+
+  if (shouldSkipRegistration()) {
+    await liveSessions.clearParticipantConnection(participantConnection).catch(logParticipantCleanupFailure)
+    return
+  }
+
+  sendEvent(socket, event)
+  registerSocket()
 }
 
 const sendInitialState = async (
@@ -345,12 +415,7 @@ const sendInitialState = async (
     sendEvent(socket, await createEvent())
     return true
   } catch {
-    sendEvent(socket, {
-      type: 'protocol_error',
-      code: 'connection_state_unavailable',
-      message: 'Connection state is not available.',
-    })
-    socket.close()
+    sendConnectionStateUnavailable(socket)
     return false
   }
 }
@@ -365,6 +430,33 @@ const sendRuntimeNotAvailable = (socket: ConnectionSocket): void => {
     code: 'runtime_not_available',
     message: 'Runtime event handling is not available in this task.',
   })
+}
+
+const handleRuntimeEvent = (
+  handleEvent: () => void | Promise<void>,
+  socket: ConnectionSocket,
+): void => {
+  void Promise.resolve(handleEvent()).catch(() => {
+    console.error('Runtime event handler failed')
+    sendEvent(socket, {
+      type: 'runtime_error',
+      code: 'command_failed',
+      message: 'Runtime command failed.',
+    })
+  })
+}
+
+const sendConnectionStateUnavailable = (socket: ConnectionSocket): void => {
+  sendEvent(socket, {
+    type: 'protocol_error',
+    code: 'connection_state_unavailable',
+    message: 'Connection state is not available.',
+  })
+  socket.close()
+}
+
+const logParticipantCleanupFailure = (error: unknown): void => {
+  console.error('Failed to clear participant WebSocket connection', error)
 }
 
 const unauthorized = (

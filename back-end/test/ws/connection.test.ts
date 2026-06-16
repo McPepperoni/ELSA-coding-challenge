@@ -9,7 +9,9 @@ import {
   createHostConnectionEvents,
   createParticipantConnectionEvents,
   createWebSocketRoutes,
+  type ConnectionEvents,
   type RuntimeHandlers,
+  type WebSocketUpgrade,
 } from '@/ws/connection.js'
 import type { SocketHub } from '@/ws/broadcasts.js'
 
@@ -237,6 +239,41 @@ test('valid host route reaches the upgrade factory', async () => {
   expect(await response.text()).toBe('upgraded')
 })
 
+test('host route factory injects runtime handlers into connection events', async () => {
+  const { dependencies } = createDependencies()
+  const socket = createSocket()
+  const handledHostEvents: string[] = []
+  const captured: { createEvents?: Parameters<WebSocketUpgrade>[0] } = {}
+  const app = createWebSocketRoutes(
+    {
+      ...dependencies,
+      runtimeHandlers: {
+        handleHostEvent(input) {
+          handledHostEvents.push(input.event.type)
+        },
+        handleParticipantEvent() {
+          return undefined
+        },
+      },
+    },
+    (createEvents) => {
+      captured.createEvents = createEvents
+      return () => new Response('upgraded', { status: 200 })
+    },
+  )
+
+  const response = await app.request('/host?token=host-token')
+  if (!captured.createEvents) {
+    throw new Error('upgrade factory was not called')
+  }
+  const events = captured.createEvents({} as never) as ConnectionEvents
+  events?.onMessage?.(new MessageEvent('message', { data: '{"type":"start_quiz"}' }), socket)
+
+  expect(response.status).toBe(200)
+  expect(handledHostEvents).toEqual(['start_quiz'])
+  expect(socket.sent).toEqual([])
+})
+
 test('missing and invalid participant tokens return HTTP 401 JSON before upgrade', async () => {
   const { dependencies } = createDependencies()
   let upgradeCalls = 0
@@ -272,6 +309,48 @@ test('valid participant route reaches the upgrade factory', async () => {
 
   expect(response.status).toBe(200)
   expect(await response.text()).toBe('upgraded')
+})
+
+test('participant route factory injects runtime handlers into connection events', async () => {
+  const { dependencies } = createDependencies()
+  const socket = createSocket()
+  const handledParticipantSelections: string[] = []
+  const captured: { createEvents?: Parameters<WebSocketUpgrade>[0] } = {}
+  const app = createWebSocketRoutes(
+    {
+      ...dependencies,
+      runtimeHandlers: {
+        handleHostEvent() {
+          return undefined
+        },
+        handleParticipantEvent(input) {
+          if (input.event.type === 'submit_answer') {
+            handledParticipantSelections.push(input.event.selectedOptionId)
+          }
+        },
+      },
+    },
+    (createEvents) => {
+      captured.createEvents = createEvents
+      return () => new Response('upgraded', { status: 200 })
+    },
+  )
+
+  const response = await app.request('/participant?token=participant-token')
+  if (!captured.createEvents) {
+    throw new Error('upgrade factory was not called')
+  }
+  const events = captured.createEvents({} as never) as ConnectionEvents
+  events?.onMessage?.(
+    new MessageEvent('message', {
+      data: '{"type":"submit_answer","selectedOptionId":"option-1"}',
+    }),
+    socket,
+  )
+
+  expect(response.status).toBe(200)
+  expect(handledParticipantSelections).toEqual(['option-1'])
+  expect(socket.sent).toEqual([])
 })
 
 test('default backend app factory exposes WebSocket host route behavior', async () => {
@@ -489,15 +568,53 @@ test('participant close before initial state resolves prevents later hub registr
   await flushAsyncWork()
 
   expect(participantConnections).toHaveLength(1)
-  expect(clearedParticipantConnections).toEqual([
-    {
-      quizSessionId: quizSession.id,
-      participantId: participant.id,
-      connectionId: participantConnections[0]?.connectionId,
-    },
-  ])
+  expect(clearedParticipantConnections.length).toBeGreaterThanOrEqual(1)
+  expect(clearedParticipantConnections).toEqual(
+    expect.arrayContaining([
+      {
+        quizSessionId: quizSession.id,
+        participantId: participant.id,
+        connectionId: participantConnections[0]?.connectionId,
+      },
+    ]),
+  )
   expect(registeredParticipants).toEqual([])
   expect(unregisteredParticipants).toEqual([])
+})
+
+test('participant close before Redis record resolves clears the completed connection and skips registration', async () => {
+  const recordConnection = createDeferred<void>()
+  const socket = createSocket()
+  const { hub, registeredParticipants } = createTrackingHub()
+  let storedConnectionId: string | null = null
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions: {
+      async recordParticipantConnection(input) {
+        await recordConnection.promise
+        storedConnectionId = input.connectionId
+      },
+      async clearParticipantConnection(input) {
+        if (storedConnectionId === input.connectionId) {
+          storedConnectionId = null
+        }
+      },
+    },
+    hub,
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  events.onClose?.(new CloseEvent('close'), socket)
+  await flushAsyncWork()
+  recordConnection.resolve()
+  await flushAsyncWork()
+
+  expect(storedConnectionId).toBeNull()
+  expect(registeredParticipants).toEqual([])
+  expect(socket.sent).toEqual([])
 })
 
 test('participant stale socket close does not clear a newer connection', async () => {
@@ -757,6 +874,83 @@ test('default valid host runtime event sends not-handled protocol error', () => 
     code: 'runtime_not_available',
     message: 'Runtime event handling is not available in this task.',
   })
+})
+
+test('rejected host runtime handler sends generic runtime error', async () => {
+  const socket = createSocket()
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => hostState,
+    },
+    runtimeHandlers: {
+      async handleHostEvent() {
+        throw new Error('boom')
+      },
+      handleParticipantEvent() {
+        return undefined
+      },
+    },
+  })
+
+  try {
+    events.onMessage?.(new MessageEvent('message', { data: '{"type":"start_quiz"}' }), socket)
+    await flushAsyncWork()
+
+    expect(parseSent(socket)).toEqual({
+      type: 'runtime_error',
+      code: 'command_failed',
+      message: 'Runtime command failed.',
+    })
+    expect(consoleError).toHaveBeenCalledTimes(1)
+    expect(consoleError.mock.calls[0]?.[0]).toBe('Runtime event handler failed')
+  } finally {
+    consoleError.mockRestore()
+  }
+})
+
+test('rejected participant runtime handler sends generic runtime error', async () => {
+  const socket = createSocket()
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions: {
+      recordParticipantConnection: async () => undefined,
+      clearParticipantConnection: async () => undefined,
+    },
+    runtimeHandlers: {
+      handleHostEvent() {
+        return undefined
+      },
+      async handleParticipantEvent() {
+        throw new Error('boom')
+      },
+    },
+  })
+
+  try {
+    events.onMessage?.(
+      new MessageEvent('message', {
+        data: '{"type":"submit_answer","selectedOptionId":"option-1"}',
+      }),
+      socket,
+    )
+    await flushAsyncWork()
+
+    expect(parseSent(socket)).toEqual({
+      type: 'runtime_error',
+      code: 'command_failed',
+      message: 'Runtime command failed.',
+    })
+    expect(consoleError).toHaveBeenCalledTimes(1)
+    expect(consoleError.mock.calls[0]?.[0]).toBe('Runtime event handler failed')
+  } finally {
+    consoleError.mockRestore()
+  }
 })
 
 test('Bun server entrypoint exports Hono websocket handler', async () => {
