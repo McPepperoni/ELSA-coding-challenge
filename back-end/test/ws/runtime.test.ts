@@ -159,9 +159,11 @@ const createDependencies = (
     persistenceRejects?: boolean
     deferActiveQuestion?: boolean
     activeQuestionRejects?: boolean
+    deferScore?: boolean
   }> = {},
 ) => {
   const activeQuestionDeferred = createDeferred()
+  const scoreDeferred = createDeferred()
   let durableSession: QuizSession = { ...quizSession }
   let liveSession: LiveSessionState | null = {
     quizSessionId: quizSession.id,
@@ -198,6 +200,14 @@ const createDependencies = (
     scoreAwarded: number
     submittedAt: Date
   }> = []
+  const scoreAttempts: Array<{
+    quizSessionId: string
+    participantId: string
+    isCorrect: boolean
+    scoreAwarded: number
+    submittedAt: Date
+  }> = []
+  const operations: string[] = []
   const persistenceEvents: PersistenceEvent[] = []
   const scheduledTimers: ScheduleQuestionTimerInput[] = []
   const cancelledTimers: string[] = []
@@ -313,6 +323,11 @@ const createDependencies = (
     },
     leaderboard: {
       async recordAnswerScore(input) {
+        scoreAttempts.push(input)
+        if (options.deferScore) {
+          await scoreDeferred.promise
+        }
+        operations.push('score')
         scoredAnswers.push(input)
         return {
           participantId: input.participantId,
@@ -323,7 +338,10 @@ const createDependencies = (
           joinedAt: input.joinedAt,
         } satisfies LiveLeaderboardParticipantState
       },
-      readLeaderboard: async () => leaderboardEntries,
+      async readLeaderboard() {
+        operations.push('readLeaderboard')
+        return leaderboardEntries
+      },
       readTopLeaderboardEntries: async () => leaderboardEntries,
     },
     timers: {
@@ -365,18 +383,38 @@ const createDependencies = (
     releaseActiveQuestion: () => {
       activeQuestionDeferred.resolve()
     },
+    releaseScore: () => {
+      scoreDeferred.resolve()
+    },
     activeQuestions,
     cancelledTimers,
     finishedLiveSessions,
     hostEvents,
+    operations,
     participantEvents,
     persistenceEvents,
     resetLocks,
     reveals,
     scheduledTimers,
+    scoreAttempts,
     scoredAnswers,
     updates,
   }
+}
+
+const waitForCondition = async (
+  condition: () => boolean,
+  message: string,
+): Promise<void> => {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (condition()) {
+      return
+    }
+
+    await Promise.resolve()
+  }
+
+  throw new Error(message)
 }
 
 test('host start begins first question with question-specific timer and secret participant payloads', async () => {
@@ -659,16 +697,16 @@ test('stale scheduled timer no-ops when a different question is active', async (
     startedAt: later,
     endsAt: new Date('2026-06-16T10:00:35.000Z'),
   }))
+  const updateCount = deps.updates.length
+  const hostEventCount = deps.hostEvents.length
+  const participantEventCount = deps.participantEvents.length
 
   await deps.scheduledTimers[0]?.onExpire(quizSession.id)
 
   expect(deps.reveals).toEqual([])
-  expect(deps.hostEvents.at(-1)).toMatchObject({
-    type: 'session_state',
-    view: 'host',
-    status: 'question_active',
-    question: { id: 'question-1' },
-  })
+  expect(deps.updates).toHaveLength(updateCount)
+  expect(deps.hostEvents).toHaveLength(hostEventCount)
+  expect(deps.participantEvents).toHaveLength(participantEventCount)
 })
 
 test('accepted answer still broadcasts when persistence enqueue rejects', async () => {
@@ -839,4 +877,47 @@ test('start rolls durable state back when activating live question fails', async
   expect(deps.activeQuestions).toEqual([])
   expect(deps.scheduledTimers).toEqual([])
   expect(deps.hostEvents).toEqual([])
+})
+
+test('finish waits for an in-flight accepted answer before final leaderboard read', async () => {
+  const deps = createDependencies({ deferScore: true })
+  const answerSocket = createSocket()
+  const finishSocket = createSocket()
+  deps.setDurableSession({ ...quizSession, status: 'question_active', currentQuestionPosition: 1 })
+  deps.setLiveSession(activeLiveState())
+
+  const answer = deps.runtime.handleParticipantEvent({
+    connection: { role: 'participant', participant, quizSession },
+    event: { type: 'submit_answer', selectedOptionId: 'option-1' },
+    socket: answerSocket,
+  })
+
+  await waitForCondition(
+    () => deps.scoreAttempts.length === 1,
+    'Accepted answer did not reach scoring before finish race setup.',
+  )
+
+  const finish = deps.runtime.handleHostEvent({
+    connection: { role: 'host', quizSession },
+    event: { type: 'finish_quiz' },
+    socket: finishSocket,
+  })
+
+  await Promise.resolve()
+  expect(deps.finishedLiveSessions).toEqual([])
+  expect(deps.updates.some(({ input }) => input.status === 'finished')).toBe(false)
+
+  deps.releaseScore()
+  await Promise.all([answer, finish])
+
+  expect(deps.scoredAnswers).toHaveLength(1)
+  expect(deps.finishedLiveSessions).toEqual([quizSession.id])
+  expect(deps.operations.indexOf('score')).toBeLessThan(
+    deps.operations.indexOf('readLeaderboard'),
+  )
+  expect(deps.persistenceEvents.some((event) => event.type === 'accepted_answer')).toBe(true)
+  expect(deps.persistenceEvents.at(-1)).toMatchObject({
+    type: 'final_leaderboard',
+    quizSessionId: quizSession.id,
+  })
 })

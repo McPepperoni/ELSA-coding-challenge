@@ -178,7 +178,9 @@ export const createLiveQuizRuntime = (
     },
 
     async handleParticipantEvent({ connection, event, socket }) {
-      await submitAnswer(connection.quizSession, connection.participant, event.selectedOptionId, socket)
+      await withSessionMutationLock(connection.quizSession.id, async () => {
+        await submitAnswer(connection.quizSession, connection.participant, event.selectedOptionId, socket)
+      })
     },
 
     async expireQuestion(quizSessionId) {
