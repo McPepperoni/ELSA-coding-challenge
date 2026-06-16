@@ -7,3 +7,4 @@ export {
   type PersistenceEvent,
   type PersistenceEventSink,
 } from './persistence-events.js'
+export { createPersistenceWorker } from './persistence-worker.js'

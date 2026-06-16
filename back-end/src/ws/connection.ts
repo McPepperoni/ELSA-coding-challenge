@@ -25,7 +25,7 @@ import type {
   ParticipantClientEvent,
   ServerEvent,
 } from '@/types/events.js'
-import { noopPersistenceEventSink } from '@/workers/persistence-events.js'
+import { createPersistenceWorker } from '@/workers/index.js'
 
 import {
   authenticateHostSocket,
@@ -192,7 +192,7 @@ export const createDefaultWebSocketRoutes = (): Hono =>
       leaderboard: leaderboardRepository,
       timers: quizTimerScheduler,
       hub: defaultSocketHub,
-      persistenceSink: noopPersistenceEventSink,
+      persistenceSink: createPersistenceWorker(),
     }),
   })
 

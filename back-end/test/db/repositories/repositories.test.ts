@@ -233,6 +233,7 @@ test('persists and reads the durable quiz data flow', async () => {
     expect(duplicateSubmission.submission.id).toBe(firstSubmission.submission.id)
     expect(await answerSubmissionsRepository.listBySession(session.id)).toHaveLength(1)
 
+    const finalResultsRecordedAt = new Date('2026-01-01T00:01:00.000Z')
     await finalResultsRepository.replaceFinalResults(session.id, [
       {
         participantId: participant.id,
@@ -241,10 +242,12 @@ test('persists and reads the durable quiz data flow', async () => {
         correctAnswerCount: 1,
         lastCorrectSubmissionAt: new Date('2026-01-01T00:00:05.000Z'),
         joinedAt: participant.joinedAt,
+        recordedAt: finalResultsRecordedAt,
       },
     ])
 
-    expect(await finalResultsRepository.readLeaderboard(session.id)).toMatchObject([
+    const finalLeaderboard = await finalResultsRepository.readLeaderboard(session.id)
+    expect(finalLeaderboard).toMatchObject([
       {
         participantId: participant.id,
         rank: 1,
@@ -252,6 +255,7 @@ test('persists and reads the durable quiz data flow', async () => {
         correctAnswerCount: 1,
       },
     ])
+    expect(finalLeaderboard[0]?.recordedAt.toISOString()).toBe(finalResultsRecordedAt.toISOString())
   } finally {
     if (quizSessionId) {
       await db.delete(quizSessions).where(eq(quizSessions.id, quizSessionId))
