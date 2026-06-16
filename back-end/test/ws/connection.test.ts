@@ -617,6 +617,59 @@ test('participant close before Redis record resolves clears the completed connec
   expect(socket.sent).toEqual([])
 })
 
+test('participant initial-state send failure clears recorded connection and skips registration', async () => {
+  const socket = {
+    sent: [] as string[],
+    closed: false,
+    send() {
+      throw new Error('socket unavailable')
+    },
+    close() {
+      this.closed = true
+    },
+  }
+  const participantConnections: Array<{
+    quizSessionId: string
+    participantId: string
+    connectionId: string
+    connectedAt: Date
+  }> = []
+  const clearedParticipantConnections: Array<{
+    quizSessionId: string
+    participantId: string
+    connectionId: string
+  }> = []
+  const { hub, registeredParticipants } = createTrackingHub()
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions: {
+      async recordParticipantConnection(input) {
+        participantConnections.push(input)
+      },
+      async clearParticipantConnection(input) {
+        clearedParticipantConnections.push(input)
+      },
+    },
+    hub,
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
+
+  expect(participantConnections).toHaveLength(1)
+  expect(clearedParticipantConnections).toEqual([
+    {
+      quizSessionId: quizSession.id,
+      participantId: participant.id,
+      connectionId: participantConnections[0]?.connectionId,
+    },
+  ])
+  expect(registeredParticipants).toEqual([])
+})
+
 test('participant stale socket close does not clear a newer connection', async () => {
   const connectionStore: {
     connectedParticipantId: string | null
@@ -905,6 +958,44 @@ test('rejected host runtime handler sends generic runtime error', async () => {
     })
     expect(consoleError).toHaveBeenCalledTimes(1)
     expect(consoleError.mock.calls[0]?.[0]).toBe('Runtime event handler failed')
+  } finally {
+    consoleError.mockRestore()
+  }
+})
+
+test('rejected host runtime handler does not leak when runtime error send fails', async () => {
+  const socket = {
+    sent: [] as string[],
+    closed: false,
+    send() {
+      throw new Error('socket unavailable')
+    },
+    close() {
+      this.closed = true
+    },
+  }
+  const consoleError = spyOn(console, 'error').mockImplementation(() => undefined)
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => hostState,
+    },
+    runtimeHandlers: {
+      async handleHostEvent() {
+        throw new Error('boom')
+      },
+      handleParticipantEvent() {
+        return undefined
+      },
+    },
+  })
+
+  try {
+    events.onMessage?.(new MessageEvent('message', { data: '{"type":"start_quiz"}' }), socket)
+    await flushAsyncWork()
+
+    expect(consoleError).toHaveBeenCalledWith('Runtime event handler failed')
+    expect(consoleError).toHaveBeenCalledWith('Failed to send runtime error response')
   } finally {
     consoleError.mockRestore()
   }

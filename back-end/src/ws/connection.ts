@@ -403,7 +403,11 @@ const openParticipantConnection = async ({
     return
   }
 
-  sendEvent(socket, event)
+  if (!trySendEvent(socket, event)) {
+    await liveSessions.clearParticipantConnection(participantConnection).catch(logParticipantCleanupFailure)
+    return
+  }
+
   registerSocket()
 }
 
@@ -438,12 +442,25 @@ const handleRuntimeEvent = (
 ): void => {
   void Promise.resolve(handleEvent()).catch(() => {
     console.error('Runtime event handler failed')
-    sendEvent(socket, {
-      type: 'runtime_error',
-      code: 'command_failed',
-      message: 'Runtime command failed.',
-    })
+    if (
+      !trySendEvent(socket, {
+        type: 'runtime_error',
+        code: 'command_failed',
+        message: 'Runtime command failed.',
+      })
+    ) {
+      console.error('Failed to send runtime error response')
+    }
   })
+}
+
+const trySendEvent = (socket: ConnectionSocket, event: ServerEvent): boolean => {
+  try {
+    sendEvent(socket, event)
+    return true
+  } catch {
+    return false
+  }
 }
 
 const sendConnectionStateUnavailable = (socket: ConnectionSocket): void => {
