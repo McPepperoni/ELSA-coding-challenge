@@ -20,7 +20,11 @@ import {
   type ClearParticipantConnectionInput,
   type ParticipantConnectionInput,
 } from '@/redis/index.js'
-import type { ServerEvent, SocketRole } from '@/types/events.js'
+import type {
+  HostClientEvent,
+  ParticipantClientEvent,
+  ServerEvent,
+} from '@/types/events.js'
 
 import {
   authenticateHostSocket,
@@ -28,6 +32,7 @@ import {
   type HostSocketConnection,
   type ParticipantSocketConnection,
 } from './auth.js'
+import defaultSocketHub, { type SocketHub } from './broadcasts.js'
 import { parseClientEvent, serializeServerEvent } from './protocol.js'
 import {
   createHostStatePresenter,
@@ -51,6 +56,7 @@ export type WebSocketRouteDependencies = StatePresenterDependencies &
         recordParticipantConnection: (input: ParticipantConnectionInput) => Promise<void>
         clearParticipantConnection: (input: ClearParticipantConnectionInput) => Promise<void>
       }>
+    socketHub?: SocketHub
   }>
 
 export type ConnectionSocket = Pick<WSContext, 'send' | 'close'>
@@ -67,11 +73,26 @@ export type WebSocketUpgrade = (
 
 const defaultUpgradeWebSocket: WebSocketUpgrade = (createEvents) => upgradeWebSocket(createEvents)
 
+export type RuntimeHandlers = Readonly<{
+  handleHostEvent(input: {
+    connection: HostSocketConnection
+    event: Exclude<HostClientEvent, { type: 'ping' }>
+    socket: ConnectionSocket
+  }): void | Promise<void>
+  handleParticipantEvent(input: {
+    connection: ParticipantSocketConnection
+    event: Exclude<ParticipantClientEvent, { type: 'ping' }>
+    socket: ConnectionSocket
+  }): void | Promise<void>
+}>
+
 export type HostConnectionEventsInput = Readonly<{
   connection: HostSocketConnection
   presenter: Readonly<{
     presentHostState: (quizSession: QuizSession) => Promise<ServerEvent>
   }>
+  hub?: SocketHub
+  runtimeHandlers?: RuntimeHandlers
 }>
 
 export type ParticipantConnectionEventsInput = Readonly<{
@@ -86,6 +107,8 @@ export type ParticipantConnectionEventsInput = Readonly<{
     recordParticipantConnection: (input: ParticipantConnectionInput) => Promise<void>
     clearParticipantConnection: (input: ClearParticipantConnectionInput) => Promise<void>
   }>
+  hub?: SocketHub
+  runtimeHandlers?: RuntimeHandlers
 }>
 
 export const createWebSocketRoutes = (
@@ -106,6 +129,7 @@ export const createWebSocketRoutes = (
       createHostConnectionEvents({
         connection: result.connection,
         presenter,
+        hub: dependencies.socketHub ?? defaultSocketHub,
       }),
     )
 
@@ -125,6 +149,7 @@ export const createWebSocketRoutes = (
         connection: result.connection,
         presenter,
         liveSessions: dependencies.liveSessions,
+        hub: dependencies.socketHub ?? defaultSocketHub,
       }),
     )
 
@@ -143,27 +168,51 @@ export const createDefaultWebSocketRoutes = (): Hono =>
     liveSessions: liveSessionRepository,
     answerLocks: answerLockRepository,
     leaderboard: leaderboardRepository,
+    socketHub: defaultSocketHub,
   })
 
 export const createHostConnectionEvents = ({
   connection,
   presenter,
-}: HostConnectionEventsInput): ConnectionEvents => ({
-  onOpen(_event, socket) {
-    void sendInitialState(socket, () => presenter.presentHostState(connection.quizSession))
-  },
+  hub = defaultSocketHub,
+  runtimeHandlers = defaultRuntimeHandlers,
+}: HostConnectionEventsInput): ConnectionEvents => {
+  let unregisterSocket: (() => void) | null = null
 
-  onMessage(event, socket) {
-    handleClientMessage('host', event.data, socket)
-  },
-})
+  return {
+    onOpen(_event, socket) {
+      void sendInitialState(socket, () => presenter.presentHostState(connection.quizSession)).then(
+        (didSendInitialState) => {
+          if (didSendInitialState) {
+            unregisterSocket = hub.registerHostSocket({
+              quizSessionId: connection.quizSession.id,
+              socket,
+            })
+          }
+        },
+      )
+    },
+
+    onMessage(event, socket) {
+      handleHostClientMessage(connection, event.data, socket, runtimeHandlers)
+    },
+
+    onClose() {
+      unregisterSocket?.()
+      unregisterSocket = null
+    },
+  }
+}
 
 export const createParticipantConnectionEvents = ({
   connection,
   presenter,
   liveSessions,
+  hub = defaultSocketHub,
+  runtimeHandlers = defaultRuntimeHandlers,
 }: ParticipantConnectionEventsInput): ConnectionEvents => {
   const connectionId = randomUUID()
+  let unregisterSocket: (() => void) | null = null
 
   return {
     onOpen(_event, socket) {
@@ -176,14 +225,24 @@ export const createParticipantConnectionEvents = ({
         })
 
         return presenter.presentParticipantState(connection.participant, connection.quizSession)
+      }).then((didSendInitialState) => {
+        if (didSendInitialState) {
+          unregisterSocket = hub.registerParticipantSocket({
+            quizSessionId: connection.quizSession.id,
+            participantId: connection.participant.id,
+            socket,
+          })
+        }
       })
     },
 
     onMessage(event, socket) {
-      handleClientMessage('participant', event.data, socket)
+      handleParticipantClientMessage(connection, event.data, socket, runtimeHandlers)
     },
 
     onClose() {
+      unregisterSocket?.()
+      unregisterSocket = null
       void liveSessions
         .clearParticipantConnection({
           quizSessionId: connection.quizSession.id,
@@ -197,10 +256,20 @@ export const createParticipantConnectionEvents = ({
   }
 }
 
-const handleClientMessage = (
-  role: SocketRole,
+const defaultRuntimeHandlers: RuntimeHandlers = {
+  handleHostEvent({ socket }) {
+    sendRuntimeNotAvailable(socket)
+  },
+  handleParticipantEvent({ socket }) {
+    sendRuntimeNotAvailable(socket)
+  },
+}
+
+const handleHostClientMessage = (
+  connection: HostSocketConnection,
   data: MessageEvent['data'],
   socket: ConnectionSocket,
+  runtimeHandlers: RuntimeHandlers,
 ): void => {
   if (typeof data !== 'string') {
     sendEvent(socket, {
@@ -211,7 +280,7 @@ const handleClientMessage = (
     return
   }
 
-  const result = parseClientEvent(role, data)
+  const result = parseClientEvent('host', data)
 
   if (!result.ok) {
     sendEvent(socket, result.event)
@@ -223,19 +292,54 @@ const handleClientMessage = (
     return
   }
 
-  sendEvent(socket, {
-    type: 'protocol_error',
-    code: 'runtime_not_available',
-    message: 'Runtime event handling is not available in this task.',
+  void runtimeHandlers.handleHostEvent({
+    connection,
+    event: result.event,
+    socket,
+  })
+}
+
+const handleParticipantClientMessage = (
+  connection: ParticipantSocketConnection,
+  data: MessageEvent['data'],
+  socket: ConnectionSocket,
+  runtimeHandlers: RuntimeHandlers,
+): void => {
+  if (typeof data !== 'string') {
+    sendEvent(socket, {
+      type: 'protocol_error',
+      code: 'invalid_event_shape',
+      message: 'Message shape is not supported.',
+    })
+    return
+  }
+
+  const result = parseClientEvent('participant', data)
+
+  if (!result.ok) {
+    sendEvent(socket, result.event)
+    return
+  }
+
+  if (result.event.type === 'ping') {
+    sendEvent(socket, { type: 'pong' })
+    return
+  }
+
+  void runtimeHandlers.handleParticipantEvent({
+    connection,
+    event: result.event,
+    socket,
   })
 }
 
 const sendInitialState = async (
   socket: ConnectionSocket,
   createEvent: () => Promise<ServerEvent>,
-): Promise<void> => {
+): Promise<boolean> => {
   try {
     sendEvent(socket, await createEvent())
+    return true
   } catch {
     sendEvent(socket, {
       type: 'protocol_error',
@@ -243,11 +347,20 @@ const sendInitialState = async (
       message: 'Connection state is not available.',
     })
     socket.close()
+    return false
   }
 }
 
 const sendEvent = (socket: ConnectionSocket, event: ServerEvent): void => {
   socket.send(serializeServerEvent(event))
+}
+
+const sendRuntimeNotAvailable = (socket: ConnectionSocket): void => {
+  sendEvent(socket, {
+    type: 'protocol_error',
+    code: 'runtime_not_available',
+    message: 'Runtime event handling is not available in this task.',
+  })
 }
 
 const unauthorized = (

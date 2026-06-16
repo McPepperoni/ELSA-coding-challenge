@@ -9,7 +9,9 @@ import {
   createHostConnectionEvents,
   createParticipantConnectionEvents,
   createWebSocketRoutes,
+  type RuntimeHandlers,
 } from '@/ws/connection.js'
+import type { SocketHub } from '@/ws/broadcasts.js'
 
 const now = new Date('2026-06-16T10:00:00.000Z')
 
@@ -58,6 +60,45 @@ const parseSent = (socket: SentSocket, index = 0): ServerEvent => JSON.parse(soc
 
 const flushAsyncWork = async () => {
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
+const createTrackingHub = () => {
+  const registeredHosts: string[] = []
+  const unregisteredHosts: string[] = []
+  const registeredParticipants: string[] = []
+  const unregisteredParticipants: string[] = []
+
+  const hub: SocketHub = {
+    registerHostSocket(input) {
+      registeredHosts.push(input.quizSessionId)
+      return () => {
+        unregisteredHosts.push(input.quizSessionId)
+      }
+    },
+    registerParticipantSocket(input) {
+      registeredParticipants.push(`${input.quizSessionId}:${input.participantId}`)
+      return () => {
+        unregisteredParticipants.push(`${input.quizSessionId}:${input.participantId}`)
+      }
+    },
+    sendToHostSockets() {
+      return undefined
+    },
+    sendToParticipantSockets() {
+      return undefined
+    },
+    sendToParticipantSocket() {
+      return undefined
+    },
+  }
+
+  return {
+    hub,
+    registeredHosts,
+    unregisteredHosts,
+    registeredParticipants,
+    unregisteredParticipants,
+  }
 }
 
 const hostState = {
@@ -249,6 +290,44 @@ test('host onOpen sends current host session state', async () => {
   expect(parseSent(socket)).toEqual(hostState)
 })
 
+test('host onOpen registers in injected hub after successful initial state and onClose unregisters', async () => {
+  const socket = createSocket()
+  const { hub, registeredHosts, unregisteredHosts } = createTrackingHub()
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => hostState,
+    },
+    hub,
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
+  events.onClose?.(new CloseEvent('close'), socket)
+
+  expect(registeredHosts).toEqual([quizSession.id])
+  expect(unregisteredHosts).toEqual([quizSession.id])
+})
+
+test('failed host initial state does not register in injected hub', async () => {
+  const socket = createSocket()
+  const { hub, registeredHosts } = createTrackingHub()
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      async presentHostState() {
+        throw new Error('state unavailable')
+      },
+    },
+    hub,
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
+
+  expect(registeredHosts).toEqual([])
+})
+
 test('host onOpen starts initial-state work without returning a promise', () => {
   const socket = createSocket()
   const events = createHostConnectionEvents({
@@ -308,6 +387,36 @@ test('participant onOpen records connection and sends participant session state'
   expect(participantConnections[0]?.connectionId).not.toBe('')
   expect(participantConnections[0]?.connectedAt).toBeInstanceOf(Date)
   expect(parseSent(socket)).toEqual(participantState)
+})
+
+test('participant onOpen registers in injected hub after Redis record and initial state, and onClose unregisters and clears Redis connection', async () => {
+  const { dependencies, participantConnections, clearedParticipantConnections } = createDependencies()
+  const socket = createSocket()
+  const { hub, registeredParticipants, unregisteredParticipants } = createTrackingHub()
+  const events = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions: dependencies.liveSessions,
+    hub,
+  })
+
+  events.onOpen?.(new Event('open'), socket)
+  await flushAsyncWork()
+  events.onClose?.(new CloseEvent('close'), socket)
+  await flushAsyncWork()
+
+  expect(participantConnections).toHaveLength(1)
+  expect(registeredParticipants).toEqual([`${quizSession.id}:${participant.id}`])
+  expect(unregisteredParticipants).toEqual([`${quizSession.id}:${participant.id}`])
+  expect(clearedParticipantConnections).toEqual([
+    {
+      quizSessionId: quizSession.id,
+      participantId: participant.id,
+      connectionId: participantConnections[0]?.connectionId,
+    },
+  ])
 })
 
 test('participant stale socket close does not clear a newer connection', async () => {
@@ -497,6 +606,76 @@ test('valid runtime event sends not-handled protocol error without side effects'
   })
   expect(participantConnections).toEqual([])
   expect(clearedParticipantConnections).toEqual([])
+})
+
+test('injected runtime handlers receive valid non-ping host and participant events with connection and socket', () => {
+  const hostSocket = createSocket()
+  const participantSocket = createSocket()
+  const handledHostEvents: string[] = []
+  const handledParticipantSelections: string[] = []
+  const runtimeHandlers: RuntimeHandlers = {
+    handleHostEvent(input) {
+      expect(input.connection.quizSession.id).toBe(quizSession.id)
+      expect(input.socket).toBe(hostSocket)
+      handledHostEvents.push(input.event.type)
+    },
+    handleParticipantEvent(input) {
+      expect(input.connection.participant.id).toBe(participant.id)
+      expect(input.socket).toBe(participantSocket)
+      if (input.event.type === 'submit_answer') {
+        handledParticipantSelections.push(input.event.selectedOptionId)
+      }
+    },
+  }
+  const hostEvents = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => hostState,
+    },
+    runtimeHandlers,
+  })
+  const participantEvents = createParticipantConnectionEvents({
+    connection: { role: 'participant', participant, quizSession },
+    presenter: {
+      presentParticipantState: async () => participantState,
+    },
+    liveSessions: {
+      recordParticipantConnection: async () => undefined,
+      clearParticipantConnection: async () => undefined,
+    },
+    runtimeHandlers,
+  })
+
+  hostEvents.onMessage?.(new MessageEvent('message', { data: '{"type":"start_quiz"}' }), hostSocket)
+  participantEvents.onMessage?.(
+    new MessageEvent('message', {
+      data: '{"type":"submit_answer","selectedOptionId":"option-1"}',
+    }),
+    participantSocket,
+  )
+
+  expect(handledHostEvents).toEqual(['start_quiz'])
+  expect(handledParticipantSelections).toEqual(['option-1'])
+  expect(hostSocket.sent).toEqual([])
+  expect(participantSocket.sent).toEqual([])
+})
+
+test('default valid host runtime event sends not-handled protocol error', () => {
+  const socket = createSocket()
+  const events = createHostConnectionEvents({
+    connection: { role: 'host', quizSession },
+    presenter: {
+      presentHostState: async () => hostState,
+    },
+  })
+
+  events.onMessage?.(new MessageEvent('message', { data: '{"type":"start_quiz"}' }), socket)
+
+  expect(parseSent(socket)).toEqual({
+    type: 'protocol_error',
+    code: 'runtime_not_available',
+    message: 'Runtime event handling is not available in this task.',
+  })
 })
 
 test('Bun server entrypoint exports Hono websocket handler', async () => {
