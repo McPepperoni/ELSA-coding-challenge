@@ -62,6 +62,22 @@ test('scheduling uses endsAt-now delay and invokes onExpire with quizSessionId',
   expect(expiredSessionIds).toEqual(['session-1'])
 })
 
+test('fired question timers are removed before later cancellation', () => {
+  const clock = createFakeClock(new Date('2026-01-01T00:00:00.000Z'))
+  const scheduler = createQuizTimerScheduler(clock)
+
+  scheduler.scheduleQuestionEnd({
+    quizSessionId: 'session-1',
+    endsAt: new Date('2026-01-01T00:00:30.000Z'),
+    onExpire: () => undefined,
+  })
+
+  clock.fire(clock.handles[0] as TimerHandle)
+  scheduler.cancelQuestionTimer('session-1')
+
+  expect(clock.handles[0]?.cleared).toBe(false)
+})
+
 test('scheduling a replacement timer cancels the previous handle', () => {
   const clock = createFakeClock(new Date('2026-01-01T00:00:00.000Z'))
   const scheduler = createQuizTimerScheduler(clock)
