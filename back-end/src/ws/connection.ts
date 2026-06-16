@@ -25,6 +25,7 @@ import type {
   ParticipantClientEvent,
   ServerEvent,
 } from '@/types/events.js'
+import { noopPersistenceEventSink } from '@/workers/persistence-events.js'
 
 import {
   authenticateHostSocket,
@@ -34,11 +35,13 @@ import {
 } from './auth.js'
 import defaultSocketHub, { type SocketHub } from './broadcasts.js'
 import { parseClientEvent, serializeServerEvent } from './protocol.js'
+import { createLiveQuizRuntime } from './runtime.js'
 import {
   createHostStatePresenter,
   createParticipantStatePresenter,
   type StatePresenterDependencies,
 } from './state-presenters.js'
+import { quizTimerScheduler } from './timers.js'
 
 export type WebSocketRouteDependencies = StatePresenterDependencies &
   Readonly<{
@@ -75,6 +78,14 @@ export type WebSocketUpgrade = (
 const defaultUpgradeWebSocket: WebSocketUpgrade = (createEvents) => upgradeWebSocket(createEvents)
 
 export type RuntimeHandlers = Readonly<{
+  handleHostConnected?(input: {
+    connection: HostSocketConnection
+    socket: ConnectionSocket
+  }): void | Promise<void>
+  handleParticipantConnected?(input: {
+    connection: ParticipantSocketConnection
+    socket: ConnectionSocket
+  }): void | Promise<void>
   handleHostEvent(input: {
     connection: HostSocketConnection
     event: Exclude<HostClientEvent, { type: 'ping' }>
@@ -172,6 +183,17 @@ export const createDefaultWebSocketRoutes = (): Hono =>
     answerLocks: answerLockRepository,
     leaderboard: leaderboardRepository,
     socketHub: defaultSocketHub,
+    runtimeHandlers: createLiveQuizRuntime({
+      quizSessions: quizSessionsRepository,
+      participants: participantsRepository,
+      questionSets: questionSetsRepository,
+      liveSessions: liveSessionRepository,
+      answerLocks: answerLockRepository,
+      leaderboard: leaderboardRepository,
+      timers: quizTimerScheduler,
+      hub: defaultSocketHub,
+      persistenceSink: noopPersistenceEventSink,
+    }),
   })
 
 export const createHostConnectionEvents = ({
@@ -192,6 +214,10 @@ export const createHostConnectionEvents = ({
               quizSessionId: connection.quizSession.id,
               socket,
             })
+            handleRuntimeEvent(
+              () => runtimeHandlers.handleHostConnected?.({ connection, socket }),
+              socket,
+            )
           }
         },
       )
@@ -236,6 +262,7 @@ export const createParticipantConnectionEvents = ({
             socket,
           })
         },
+        runtimeHandlers,
       })
     },
 
@@ -351,6 +378,7 @@ const openParticipantConnection = async ({
   socket,
   shouldSkipRegistration,
   registerSocket,
+  runtimeHandlers,
 }: Readonly<{
   connection: ParticipantSocketConnection
   connectionId: string
@@ -359,6 +387,7 @@ const openParticipantConnection = async ({
   socket: ConnectionSocket
   shouldSkipRegistration: () => boolean
   registerSocket: () => void
+  runtimeHandlers: RuntimeHandlers
 }>): Promise<void> => {
   const participantConnection = {
     quizSessionId: connection.quizSession.id,
@@ -411,6 +440,10 @@ const openParticipantConnection = async ({
   }
 
   registerSocket()
+  handleRuntimeEvent(
+    () => runtimeHandlers.handleParticipantConnected?.({ connection, socket }),
+    socket,
+  )
 }
 
 const sendInitialState = async (
