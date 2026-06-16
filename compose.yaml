@@ -1,0 +1,63 @@
+# AI Generated code <PURPOSE>: production compose stack
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7.4.1-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  back-end:
+    build:
+      context: ./back-end
+      dockerfile: Dockerfile
+      target: runner
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+      PORT: ${BACKEND_PORT:?BACKEND_PORT is required}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:?BACKEND_PORT is required}:${BACKEND_PORT:?BACKEND_PORT is required}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  front-end:
+    build:
+      context: ./front-end
+      dockerfile: Dockerfile
+      target: runner
+      args:
+        VITE_API_URL: ${VITE_API_URL:?VITE_API_URL is required}
+    environment:
+      FRONTEND_PORT: ${FRONTEND_PORT:?FRONTEND_PORT is required}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:?FRONTEND_PORT is required}:${FRONTEND_PORT:?FRONTEND_PORT is required}"
+    depends_on:
+      - back-end
+
+volumes:
+  postgres-data:
+  redis-data:
