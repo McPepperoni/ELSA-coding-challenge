@@ -1,2 +1,4 @@
-// AI Generated code track backend database source boundary
-export {}
+// AI Generated code <PURPOSE>: expose backend database layer
+export { closeDb, db, pool } from './client.js'
+export * from './repositories/index.js'
+export * from './schema.js'

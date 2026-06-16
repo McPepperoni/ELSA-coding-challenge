@@ -4,14 +4,23 @@
   "scripts": {
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "build": "bun run typecheck"
+    "build": "bun run typecheck",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:smoke": "bun run src/db/smoke.ts"
   },
   "dependencies": {
-    "hono": "^4.12.25"
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.25",
+    "pg": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.17",
+    "@types/pg": "^8.20.0",
+    "bun-types": "^1.3.14",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.7.1",
     "typescript": "^5.8.3"
   }

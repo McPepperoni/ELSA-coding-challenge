@@ -1,8 +1,12 @@
-// AI Generated code centralize typed backend environment configuration
+// AI Generated code <PURPOSE>: centralize typed backend environment configuration
 type BackendEnv = Readonly<{
   DATABASE_URL: string
   REDIS_URL: string
   PORT: number
+}>
+
+type DatabaseEnv = Readonly<{
+  DATABASE_URL: string
 }>
 
 const readRequired = (name: string): string => {
@@ -26,9 +30,21 @@ const readPort = (): number => {
   return port
 }
 
+export const dbEnv: DatabaseEnv = {
+  get DATABASE_URL() {
+    return readRequired('DATABASE_URL')
+  },
+}
+
 export const env: BackendEnv = {
-  DATABASE_URL: readRequired('DATABASE_URL'),
-  REDIS_URL: readRequired('REDIS_URL'),
-  PORT: readPort(),
+  get DATABASE_URL() {
+    return dbEnv.DATABASE_URL
+  },
+  get REDIS_URL() {
+    return readRequired('REDIS_URL')
+  },
+  get PORT() {
+    return readPort()
+  },
 }
 
