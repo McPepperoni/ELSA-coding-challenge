@@ -17,7 +17,7 @@ Implement the Redis-backed live-session state layer using the official `redis` /
 
 ## Context
 
-Redis stores active quiz state for low-latency WebSocket operations. Redis is command-oriented and is not managed through an ORM. It owns current quiz status, current question index, question start/end times, participant connection state, answer locks, answered count, live leaderboard, and short-lived session state.
+Redis stores active quiz state for low-latency WebSocket operations. Redis is command-oriented and is not managed through an ORM. It owns current quiz status, current question index/position, question start/end times, participant connection state, answer locks, answered count, live leaderboard, and short-lived session state. Durable question order comes from `quiz_sessions.question_order_ids` in PostgreSQL.
 
 ## Dependencies
 
@@ -50,7 +50,7 @@ Redis stores active quiz state for low-latency WebSocket operations. Redis is co
 ## Acceptance Criteria
 
 - A live quiz session can be initialized in Redis from a quiz session id.
-- Active question metadata includes status, question index, start time, and end time.
+- Active question metadata includes status, question index/position within the durable session order, start time, and end time.
 - Participant connection state can be recorded and cleared.
 - Answer locks prevent one participant from answering the same question twice.
 - Answered count increments only for accepted first answers.

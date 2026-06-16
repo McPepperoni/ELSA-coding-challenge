@@ -1,6 +1,6 @@
 # Backend Data Model
 
-Status: pending
+Status: completed
 Priority: 03
 
 ## Goal
@@ -30,7 +30,7 @@ PostgreSQL is the long-term source of truth for created quiz content and complet
 - Define Drizzle schema in the backend `db` layer.
 - Add migration generation and migration run scripts.
 - Add repository functions for durable records needed by REST, WebSocket, and persistence worker tasks.
-- Model quiz codes, host tokens, participant tokens, ordered questions/options, timestamps, answer correctness, awarded score, and final leaderboard records.
+- Model quiz codes, host tokens, participant tokens, questions, ordered options, per-session question order, timestamps, answer correctness, awarded score, and final leaderboard records.
 
 ## Out Of Scope
 
@@ -51,9 +51,10 @@ PostgreSQL is the long-term source of truth for created quiz content and complet
 ## Acceptance Criteria
 
 - Drizzle schema represents all durable data concepts from `SPEC.md`.
-- Each question set can have one or more ordered questions.
+- Each question set can have one or more questions.
 - Each question can have two to six ordered answer options and exactly one correct answer at validation time.
-- Quiz sessions store status, quiz code, current question position, host control identity, and timestamps.
+- Quiz sessions store status, quiz code, a non-empty ordered question ID array, current question position, host control identity, and timestamps.
+- `questions.position` is not part of the durable model; question order is session-specific.
 - Participants store display name, unique identity, join timestamp, and session association.
 - Answer submissions store selected option, correctness result, score awarded, and timestamp.
 - Migrations can be generated and applied against local PostgreSQL.
@@ -63,5 +64,6 @@ PostgreSQL is the long-term source of truth for created quiz content and complet
 - Run backend typecheck.
 - Run Drizzle migration generation.
 - Apply migrations to a local PostgreSQL database.
+- Cover the migration from `questions.position` to session-level question order.
 - Run a small repository smoke test or script that creates a question set, quiz session, participant, and answer submission.
 

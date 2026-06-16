@@ -31,9 +31,11 @@ REST handles setup and non-live actions before users enter the live quiz experie
 - Add Hono routes for creating question sets.
 - Add route to create a quiz session from a question set.
 - Generate unique quiz code, public join link data, and private host control token.
+- Persist a randomized question order for each created quiz session.
 - Add route for participant join by quiz code.
 - Generate private participant session token.
 - Add metadata routes needed by host and participant screens.
+- Ensure any question-order replacement endpoint or action is only valid before the quiz starts.
 - Return clear user-facing errors for invalid quiz code, invalid tokens, expired/finished session, and invalid question set input.
 
 ## Out Of Scope
@@ -56,6 +58,8 @@ REST handles setup and non-live actions before users enter the live quiz experie
 - A host can create a valid question set through REST.
 - Invalid question sets are rejected before session creation.
 - A host can initialize a quiz session from a valid question set.
+- Session creation persists a randomized ordered array of question IDs for the session.
+- Question-order replacement, if exposed, is rejected after the waiting-room state.
 - Session creation writes durable data and initializes Redis live state.
 - A participant can join a waiting-room quiz with a display name.
 - Participant join creates durable participant data and waiting-room membership.

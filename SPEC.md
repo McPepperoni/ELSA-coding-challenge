@@ -232,6 +232,7 @@ The system creates:
 - A unique quiz code.
 - A public join link.
 - A private host control token.
+- A persisted randomized question ID order for this session.
 - Initial live state in Redis.
 
 The quiz starts in the waiting-room state.
@@ -553,7 +554,6 @@ Represents one quiz prompt.
 Contains:
 
 - Question text.
-- Order.
 - Optional timer override.
 - Answer options.
 
@@ -575,7 +575,8 @@ Contains:
 
 - Quiz code.
 - Session status.
-- Current question position.
+- Question order as an ordered array of question IDs.
+- Current question position as the current index within the stored question order.
 - Host control identity.
 - Start and finish timestamps.
 
@@ -618,6 +619,9 @@ Quiz session validation:
 - A quiz code must be unique among active sessions.
 - A quiz session must be tied to one question set.
 - A quiz cannot start without at least one valid question.
+- The question order must contain every question from the linked question set exactly once.
+- The question order must not contain duplicate, missing, or foreign question IDs.
+- The question order can only be replaced before the quiz starts.
 
 Participant validation:
 
