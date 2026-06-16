@@ -1,16 +1,10 @@
-import { Hono } from 'hono'
 import { env } from './config/env.js'
+import { createDefaultHttpApp } from './http/index.js'
+import { connectRedis } from './redis/client.js'
 
-const app = new Hono()
+await connectRedis()
 
-const welcomeStrings = [
-  'Hello Hono!',
-  'To learn more about Hono on Vercel, visit https://vercel.com/docs/frameworks/backend/hono'
-]
-
-app.get('/', (c) => {
-  return c.text(welcomeStrings.join('\n\n'))
-})
+const app = createDefaultHttpApp()
 
 // AI Generated code <PURPOSE>: bind Bun server to typed runtime port
 export default {

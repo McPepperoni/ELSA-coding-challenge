@@ -159,6 +159,10 @@ export const quizSessionsRepository = {
     return findSingleSession(quizSessions.id, id)
   },
 
+  async deleteQuizSession(id: string): Promise<void> {
+    await db.delete(quizSessions).where(eq(quizSessions.id, id))
+  },
+
   async replaceQuizSessionQuestionOrder(
     id: string,
     questionOrderIds: readonly string[],
