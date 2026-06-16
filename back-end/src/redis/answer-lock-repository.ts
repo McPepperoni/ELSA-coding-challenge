@@ -13,6 +13,8 @@ export type AcceptFirstAnswerInput = QuestionAnswerInput &
 
 export type HasParticipantAnsweredInput = AcceptFirstAnswerInput
 
+export type ReleaseAnswerInput = AcceptFirstAnswerInput
+
 export type AcceptFirstAnswerResult = Readonly<{
   accepted: boolean
   answeredCount: number
@@ -73,6 +75,17 @@ export const createAnswerLockRepository = (client: RedisClient = redisClient) =>
       return (await client.sIsMember(answeredParticipantsKey(input), input.participantId)) === 1
     } catch (error) {
       throw wrapRedisError('read participant answer lock', error)
+    }
+  },
+
+  async releaseAnswer(input: ReleaseAnswerInput): Promise<void> {
+    try {
+      assertQuestionAnswerInput(input)
+      required(input.participantId, 'Participant id')
+
+      await client.sRem(answeredParticipantsKey(input), input.participantId)
+    } catch (error) {
+      throw wrapRedisError('release answer lock', error)
     }
   },
 

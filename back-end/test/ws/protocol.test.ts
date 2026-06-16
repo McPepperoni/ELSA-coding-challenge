@@ -1,6 +1,10 @@
 // AI Generated code <PURPOSE>: verify WebSocket protocol parsing and serialization contracts
 import { expect, test } from 'bun:test'
 
+import type {
+  AnswerResultEvent,
+  RuntimeErrorEvent,
+} from '@/types/events.js'
 import {
   parseClientEvent,
   serializeServerEvent,
@@ -114,6 +118,56 @@ test('serializes protocol error server events', () => {
       message: 'Message shape is not supported.',
     }),
   ).toBe('{"type":"protocol_error","code":"invalid_event_shape","message":"Message shape is not supported."}')
+})
+
+test('serializes accepted answer result without private answer data', () => {
+  const event = {
+    type: 'answer_result',
+    status: 'accepted',
+    selectedOptionId: 'option-1',
+  } satisfies AnswerResultEvent
+
+  const serialized = serializeServerEvent(event)
+
+  expect(serialized).toBe('{"type":"answer_result","status":"accepted","selectedOptionId":"option-1"}')
+  expect(serialized).not.toContain('isCorrect')
+  expect(serialized).not.toContain('scoreAwarded')
+  expect(serialized).not.toContain('prompt')
+  expect(serialized).not.toContain('text')
+  expect(serialized).not.toContain('correctOptionId')
+})
+
+test('serializes rejected answer result without private answer data', () => {
+  const event = {
+    type: 'answer_result',
+    status: 'rejected',
+    selectedOptionId: 'option-1',
+    reason: 'late_answer',
+    message: 'Answer was submitted after the question ended.',
+  } satisfies AnswerResultEvent
+
+  const serialized = serializeServerEvent(event)
+
+  expect(serialized).toBe(
+    '{"type":"answer_result","status":"rejected","selectedOptionId":"option-1","reason":"late_answer","message":"Answer was submitted after the question ended."}',
+  )
+  expect(serialized).not.toContain('isCorrect')
+  expect(serialized).not.toContain('scoreAwarded')
+  expect(serialized).not.toContain('prompt')
+  expect(serialized).not.toContain('text')
+  expect(serialized).not.toContain('correctOptionId')
+})
+
+test('serializes runtime error server events', () => {
+  const event = {
+    type: 'runtime_error',
+    code: 'live_state_unavailable',
+    message: 'Live quiz state is not available.',
+  } satisfies RuntimeErrorEvent
+
+  expect(serializeServerEvent(event)).toBe(
+    '{"type":"runtime_error","code":"live_state_unavailable","message":"Live quiz state is not available."}',
+  )
 })
 
 test('serializes session state date fields as ISO strings', () => {

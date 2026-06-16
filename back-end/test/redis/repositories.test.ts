@@ -78,8 +78,16 @@ const createFakeRedisClient = (): RedisClient => {
   }
 
   return {
-    async hSet(key: string, field: string, value: string) {
-      getHash(key).set(field, value)
+    async hSet(key: string, fieldOrValues: string | Record<string, string>, value?: string) {
+      if (typeof fieldOrValues === 'string') {
+        getHash(key).set(fieldOrValues, value ?? '')
+        return 1
+      }
+
+      for (const [field, fieldValue] of Object.entries(fieldOrValues)) {
+        getHash(key).set(field, fieldValue)
+      }
+
       return 1
     },
     async hGetAll(key: string) {
@@ -252,6 +260,19 @@ test('accepts only the first answer lock for a participant question pair', async
     }),
   ).toBe(2)
 
+  await answerLocks.releaseAnswer(input)
+  expect(await answerLocks.hasParticipantAnswered(input)).toBe(false)
+  expect(
+    await answerLocks.readAnsweredCount({
+      quizSessionId,
+      questionId: 'question-1',
+    }),
+  ).toBe(1)
+  expect(await answerLocks.acceptFirstAnswer(input)).toEqual({
+    accepted: true,
+    answeredCount: 2,
+  })
+
   await answerLocks.resetQuestionAnswers({
     quizSessionId,
     questionId: 'question-1',
@@ -290,6 +311,64 @@ test('clears participant connections only for the matching socket identity', asy
   })
 
   expect(await liveSessions.readConnectedParticipantIds(quizSessionId)).toEqual([])
+})
+
+test('stores question reveal metadata while clearing the active timer end', async () => {
+  const liveSessions = createLiveSessionRepository(createFakeRedisClient())
+  const quizSessionId = sessionId()
+  const startedAt = new Date('2026-01-01T00:00:31.000Z')
+
+  await liveSessions.initializeLiveSession({
+    quizSessionId,
+    questionOrderIds: ['question-1', 'question-2'],
+  })
+  await liveSessions.setActiveQuestion({
+    quizSessionId,
+    questionId: 'question-2',
+    questionPosition: 2,
+    startedAt: new Date('2026-01-01T00:00:00.000Z'),
+    endsAt: new Date('2026-01-01T00:00:30.000Z'),
+  })
+  await liveSessions.setQuestionReveal({
+    quizSessionId,
+    questionId: 'question-2',
+    questionPosition: 2,
+    startedAt,
+  })
+
+  expect(await liveSessions.readLiveSession(quizSessionId)).toMatchObject({
+    status: 'question_reveal',
+    currentQuestionId: 'question-2',
+    currentQuestionPosition: 2,
+    startedAt,
+    endsAt: null,
+  })
+})
+
+test('finishes live session while clearing active question metadata', async () => {
+  const liveSessions = createLiveSessionRepository(createFakeRedisClient())
+  const quizSessionId = sessionId()
+
+  await liveSessions.initializeLiveSession({
+    quizSessionId,
+    questionOrderIds: ['question-1'],
+  })
+  await liveSessions.setActiveQuestion({
+    quizSessionId,
+    questionId: 'question-1',
+    questionPosition: 1,
+    startedAt: new Date('2026-01-01T00:00:00.000Z'),
+    endsAt: new Date('2026-01-01T00:00:30.000Z'),
+  })
+  await liveSessions.finishLiveSession(quizSessionId)
+
+  expect(await liveSessions.readLiveSession(quizSessionId)).toMatchObject({
+    status: 'finished',
+    currentQuestionId: null,
+    currentQuestionPosition: null,
+    startedAt: null,
+    endsAt: null,
+  })
 })
 
 test('orders live leaderboard using score and deterministic tie breakers', async () => {

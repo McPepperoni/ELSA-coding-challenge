@@ -13,6 +13,7 @@ export {
   type AcceptFirstAnswerResult,
   type HasParticipantAnsweredInput,
   type QuestionAnswerInput,
+  type ReleaseAnswerInput,
 } from './answer-lock-repository.js'
 export {
   createLeaderboardRepository,
@@ -30,4 +31,5 @@ export {
   type LiveSessionState,
   type ParticipantConnectionInput,
   type SetActiveQuestionInput,
+  type SetQuestionRevealInput,
 } from './live-session-repository.js'

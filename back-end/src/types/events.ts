@@ -119,4 +119,43 @@ export type ProtocolErrorEvent = {
   message: string
 }
 
-export type ServerEvent = ServerStateEvent | ProtocolErrorEvent
+export type AnswerRejectionReason =
+  | 'duplicate_answer'
+  | 'late_answer'
+  | 'invalid_option'
+  | 'unknown_participant'
+  | 'wrong_state'
+  | 'inactive_question'
+
+export type AnswerResultEvent =
+  | {
+      type: 'answer_result'
+      status: 'accepted'
+      selectedOptionId: string
+    }
+  | {
+      type: 'answer_result'
+      status: 'rejected'
+      selectedOptionId: string
+      reason: AnswerRejectionReason
+      message: string
+    }
+
+export type RuntimeErrorCode =
+  | 'invalid_runtime_state'
+  | 'question_set_not_found'
+  | 'current_question_not_found'
+  | 'live_state_unavailable'
+  | 'command_failed'
+
+export type RuntimeErrorEvent = {
+  type: 'runtime_error'
+  code: RuntimeErrorCode
+  message: string
+}
+
+export type ServerEvent =
+  | ServerStateEvent
+  | ProtocolErrorEvent
+  | AnswerResultEvent
+  | RuntimeErrorEvent
