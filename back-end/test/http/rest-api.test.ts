@@ -201,6 +201,61 @@ const validQuestionSetBody = () => ({
   ],
 })
 
+test('allows any origin on REST route responses', async () => {
+  const { dependencies } = createDependencies()
+  const app = createHttpApp(dependencies)
+
+  const response = await app.request('/api/question-sets', {
+    method: 'POST',
+    body: JSON.stringify(validQuestionSetBody()),
+    headers: {
+      'content-type': 'application/json',
+      origin: 'https://host.example.test',
+    },
+  })
+
+  expect(response.status).toBe(201)
+  expect(response.headers.get('access-control-allow-origin')).toBe('*')
+})
+
+test('answers JSON route preflight requests with wildcard CORS headers', async () => {
+  const { dependencies } = createDependencies()
+  const app = createHttpApp(dependencies)
+
+  const response = await app.request('/api/question-sets', {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'https://participant.example.test',
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'content-type',
+    },
+  })
+
+  expect(response.status).toBe(204)
+  expect(response.headers.get('access-control-allow-origin')).toBe('*')
+  expect(response.headers.get('access-control-allow-methods')).toContain('POST')
+  expect(response.headers.get('access-control-allow-methods')).toContain('OPTIONS')
+  expect(response.headers.get('access-control-allow-headers')).toContain('Content-Type')
+})
+
+test('allows authorization headers on protected route preflights', async () => {
+  const { dependencies, state } = createDependencies()
+  const app = createHttpApp(dependencies)
+
+  const response = await app.request(`/api/quiz-sessions/${state.quizSession.id}/host`, {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'https://host.example.test',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'authorization',
+    },
+  })
+
+  expect(response.status).toBe(204)
+  expect(response.headers.get('access-control-allow-origin')).toBe('*')
+  expect(response.headers.get('access-control-allow-headers')).toContain('Authorization')
+})
+
 test('creates a valid question set through REST and maps option text', async () => {
   const { dependencies, state } = createDependencies()
   const app = createHttpApp(dependencies)

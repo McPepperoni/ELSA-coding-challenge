@@ -1,5 +1,6 @@
 // AI Generated code <PURPOSE>: compose dependency-injected Hono REST API app
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 
 import type { FullQuestionSet } from '@/db/repositories/question-sets.js'
 import type {
@@ -52,6 +53,16 @@ export type HttpDependencies = Readonly<{
 
 export const createHttpApp = (dependencies: HttpDependencies): Hono => {
   const app = new Hono()
+
+  // AI Generated code <PURPOSE>: allow browser clients from any origin to call backend routes
+  app.use(
+    '*',
+    cors({
+      origin: '*',
+      allowMethods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowHeaders: ['Content-Type', 'Authorization'],
+    }),
+  )
 
   app.onError(handleRouteError)
 

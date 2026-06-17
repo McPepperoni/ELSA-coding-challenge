@@ -4,7 +4,7 @@ type FrontendEnv = Readonly<{
 }>
 
 const readRequiredUrl = (name: string, value: string | undefined): string => {
-  const normalized = value?.trim() || 'http://localhost:3000'
+  const normalized = value?.trim() || 'http://localhost:8000'
 
   try {
     return new URL(normalized).toString().replace(/\/$/, '')
