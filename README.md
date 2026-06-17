@@ -2,6 +2,8 @@
 
 Real-time multiple-choice quiz app for the [ELSA real-time quiz coding challenge](https://github.com/elsa/coding-challenges). The implementation provides a React host/participant experience, a Hono backend, WebSocket live gameplay, Redis live state, PostgreSQL durable storage, and Docker Compose startup for a local production-style demo.
 
+Demo video: [https://youtu.be/0iy5Q9hLy-A](https://youtu.be/0iy5Q9hLy-A)
+
 ## Challenge Coverage
 
 - User participation: participants join a live quiz session by quiz code or join link, enter a display name, and wait for the host to start.
@@ -52,8 +54,8 @@ Edit `.env` before running this stack in a real production environment.
 
 Once running, use these local URLs:
 
-- Frontend: http://localhost:5173
-- Backend root check: http://localhost:3000/
+- Frontend: [http://localhost:5173](http://localhost:5173)
+- Backend root check: [http://localhost:3000/](http://localhost:3000/)
 
 Stop the stack without deleting volumes:
 
@@ -132,3 +134,4 @@ Verification for AI-assisted output included:
 - Reliability: server-authoritative timers, token validation, duplicate/late/invalid answer rejection, rollback paths, and a persistence worker reduce inconsistent live state and avoid blocking broadcasts on durable writes.
 - Maintainability: frontend code is separated by host, participant, shared, API, realtime, config, and library concerns; backend code is separated into domain, HTTP, WebSocket, database, Redis, worker, config, and types layers.
 - Observability: the current implementation includes runtime errors and targeted logging for failed sends, timer expiration failures, rollback failures, and persistence enqueue failures. A production version should add structured logs, metrics for active sessions/connections, answer latency, rejection counts by reason, Redis/database failures, and dashboards/alerts around those signals.
+
